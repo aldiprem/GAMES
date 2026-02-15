@@ -70,6 +70,20 @@ def get_recent_users(limit=5):
 app = Flask(__name__)
 CORS(app)
 
+CORS(app, 
+     origins=["https://aldiprem.github.io"], 
+     methods=["GET", "OPTIONS"],
+     allow_headers=["Content-Type", "Accept"],
+     supports_credentials=True)
+
+@app.after_request
+def after_request(response):
+    response.headers.add('Access-Control-Allow-Origin', 'https://aldiprem.github.io')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Accept')
+    response.headers.add('Access-Control-Allow-Methods', 'GET,OPTIONS')
+    response.headers.add('Access-Control-Allow-Credentials', 'true')
+    return response
+
 @app.route('/api/stats', methods=['GET'])
 def get_stats():
     """Endpoint API untuk mengambil statistik"""
