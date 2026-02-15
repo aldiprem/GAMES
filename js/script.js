@@ -1,4 +1,4 @@
-const API_URL = 'https://207.180.194.191/api/stats';
+const API_URL = 'https://jaguar-tested-sale-seeking.trycloudflare.com/api/stats';
 const UPDATE_INTERVAL = 5000;
 
 // State
