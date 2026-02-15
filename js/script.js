@@ -1,4 +1,4 @@
-const API_URL = 'https://pavilion-eyed-presence-medicines.trycloudflare.com/api/stats';
+const API_URL = 'https://eddie-lodging-vocal-gary.trycloudflare.com/api/stats';
 const UPDATE_INTERVAL = 5000;
 
 // State
