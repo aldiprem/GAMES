@@ -8,17 +8,16 @@ import os
 from dotenv import load_dotenv
 import asyncio
 
-# Load environment variables
+# ============= LOAD ENV =============
 load_dotenv()
 
-# ============= KONFIGURASI =============
-API_ID = os.getenv('API_ID')
-API_HASH = os.getenv('API_HASH')
-BOT_TOKEN = os.getenv('BOT_TOKEN')
-DB_PATH = 'giveaway.db'
-API_PORT = int(os.getenv('API_PORT', 5000))
+API_ID = int(os.getenv("API_ID"))   # HARUS INT
+API_HASH = os.getenv("API_HASH")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+API_PORT = int(os.getenv("API_PORT", 5000))
+DB_PATH = "giveaway.db"
 
-# ============= INISIALISASI DATABASE =============
+# ============= DATABASE INIT =============
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 cur = conn.cursor()
 
@@ -35,163 +34,130 @@ CREATE TABLE IF NOT EXISTS users (
 """)
 conn.commit()
 
-# ============= FUNGSI DATABASE =============
+# ============= DATABASE FUNCTIONS =============
 def get_total_users():
-    """Mengambil total jumlah user"""
     cur.execute("SELECT COUNT(*) FROM users")
     return cur.fetchone()[0]
 
 def get_users_today():
-    """Mengambil jumlah user yang join hari ini"""
     today = datetime.now().strftime("%Y-%m-%d")
-    cur.execute("SELECT COUNT(*) FROM users WHERE DATE(joined_at) = DATE(?)", (today,))
+    cur.execute("SELECT COUNT(*) FROM users WHERE DATE(joined_at)=DATE(?)", (today,))
     return cur.fetchone()[0]
 
 def get_recent_users(limit=5):
-    """Mengambil user terbaru"""
     cur.execute("""
-        SELECT user_id, fullname, username, joined_at 
-        FROM users 
-        ORDER BY joined_at DESC 
+        SELECT user_id, fullname, username, joined_at
+        FROM users
+        ORDER BY joined_at DESC
         LIMIT ?
     """, (limit,))
-    users = cur.fetchall()
-    
-    result = []
-    for user in users:
-        result.append({
-            'user_id': user[0],
-            'fullname': user[1],
-            'username': user[2],
-            'joined_at': user[3]
-        })
-    return result
+    rows = cur.fetchall()
 
+    return [
+        {
+            "user_id": r[0],
+            "fullname": r[1],
+            "username": r[2],
+            "joined_at": r[3]
+        }
+        for r in rows
+    ]
+
+# ============= FLASK API =============
 app = Flask(__name__)
-CORS(app)
 
-CORS(app, 
-     origins=["https://aldiprem.github.io"], 
+CORS(app,
+     origins=["https://aldiprem.github.io"],
      methods=["GET", "OPTIONS"],
-     allow_headers=["Content-Type", "Accept"],
+     allow_headers=["Content-Type"],
      supports_credentials=True)
 
-@app.after_request
-def after_request(response):
-    response.headers.add('Access-Control-Allow-Origin', 'https://aldiprem.github.io')
-    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Accept')
-    response.headers.add('Access-Control-Allow-Methods', 'GET,OPTIONS')
-    response.headers.add('Access-Control-Allow-Credentials', 'true')
-    return response
-
-@app.route('/api/stats', methods=['GET'])
-def get_stats():
-    """Endpoint API untuk mengambil statistik"""
+@app.route("/api/stats")
+def stats_api():
     try:
-        total_users = get_total_users()
-        users_today = get_users_today()
-        recent_users = get_recent_users()
-        
         return jsonify({
-            'success': True,
-            'total_users': total_users,
-            'users_today': users_today,
-            'recent_users': recent_users,
-            'last_updated': datetime.now().isoformat()
+            "success": True,
+            "total_users": get_total_users(),
+            "users_today": get_users_today(),
+            "recent_users": get_recent_users(),
+            "last_updated": datetime.now().isoformat()
         })
     except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+        return jsonify({"success": False, "error": str(e)}), 500
 
-@app.route('/api/health', methods=['GET'])
-def health_check():
-    """Endpoint untuk mengecek kesehatan server"""
+@app.route("/api/health")
+def health():
     return jsonify({
-        'status': 'healthy',
-        'timestamp': datetime.now().isoformat()
+        "status": "healthy",
+        "time": datetime.now().isoformat()
     })
 
 def run_flask():
-    """Menjalankan Flask server di thread terpisah"""
-    app.run(host='0.0.0.0', port=API_PORT, debug=False, threaded=True)
+    app.run(host="0.0.0.0", port=API_PORT, debug=False)
 
-bot = TelegramClient('bot', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
+# ============= TELEGRAM BOT =============
+bot = TelegramClient("bot", API_ID, API_HASH)
 
 @bot.on(events.NewMessage(pattern="^/start$"))
 async def start(event):
-    user = event.sender
-    user_id = user.id
-    fullname = user.first_name or ""
-    if user.last_name:
-        fullname += f" {user.last_name}"
+    user = await event.get_sender()
 
-    username = None
-    if user.username:
-        username = user.username
-    elif getattr(user, "usernames", None):
-        username = user.usernames[0].username
+    user_id = user.id
+    fullname = (user.first_name or "") + (" " + user.last_name if user.last_name else "")
+    username = user.username or ""
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    # Insert atau ignore jika sudah ada
+
+    # Insert user jika belum ada
     cur.execute("""
-        INSERT OR IGNORE INTO users 
-        (user_id, fullname, username, joined_at, first_start, last_start) 
+        INSERT OR IGNORE INTO users
+        (user_id, fullname, username, joined_at, first_start, last_start)
         VALUES (?, ?, ?, ?, ?, ?)
     """, (user_id, fullname, username, now, now, now))
-    
-    # Update last_start jika user sudah ada
+
+    # Update last_start
     cur.execute("""
-        UPDATE users 
-        SET last_start = ? 
-        WHERE user_id = ? AND last_start < ?
-    """, (now, user_id, now))
-    
+        UPDATE users SET last_start=? WHERE user_id=?
+    """, (now, user_id))
+
     conn.commit()
 
-    total_users = get_total_users()
-    
-    msg = f"""
-🎁 **Hallo {fullname}!**
+    total = get_total_users()
 
-✅ Anda telah tercatat dalam database!
-👥 **Total Pengguna:** {total_users}
+    await event.respond(f"""
+🎁 **Halo {fullname}!**
 
-📊 Lihat statistik di: https://username.github.io/repository-anda/
-    """
+✅ Anda sudah tercatat di database.
+👥 Total Pengguna: {total}
 
-    await event.respond(msg)
+📊 Statistik:
+https://aldiprem.github.io/GAMES/
+""")
 
 @bot.on(events.NewMessage(pattern="^/stats$"))
-async def stats(event):
-    """Command untuk melihat statistik"""
-    total_users = get_total_users()
-    users_today = get_users_today()
-    
-    msg = f"""
+async def stats_cmd(event):
+    await event.respond(f"""
 📊 **STATISTIK BOT**
 
-👥 **Total Pengguna:** {total_users}
-📅 **Pengguna Hari Ini:** {users_today}
-📈 **Website:** https://username.github.io/repository-anda/
-    """
-    
-    await event.respond(msg)
+👥 Total User: {get_total_users()}
+📅 Hari Ini: {get_users_today()}
 
+🌐 Website:
+https://aldiprem.github.io/GAMES/
+""")
+
+# ============= MAIN =============
 async def main():
-    print(f"✅ Bot berjalan!")
-    print(f"📊 API Server: http://207.180.194.191:{API_PORT}")
-    print(f"🌐 Website: https://username.github.io/repository-anda/")
+    await bot.start(bot_token=BOT_TOKEN)
+
+    print("✅ Bot berjalan")
+    print(f"🌐 API: http://0.0.0.0:{API_PORT}")
+
     await bot.run_until_disconnected()
 
-if __name__ == '__main__':
-    # Jalankan Flask di thread terpisah
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
-    flask_thread.start()
-    print("🚀 Flask API server dimulai...")
-    
-    # Jalankan bot
-    print("🤖 Telegram bot dimulai...")
-    bot.loop.run_until_complete(main())
+if __name__ == "__main__":
+    # Jalankan Flask di thread
+    threading.Thread(target=run_flask, daemon=True).start()
+    print("🚀 Flask API started")
+
+    asyncio.run(main())
