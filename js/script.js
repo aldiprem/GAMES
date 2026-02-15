@@ -1,4 +1,4 @@
-const API_URL = 'http://207.180.194.191:5000/api/stats';
+const API_URL = 'http://207.180.194.191/api/stats';
 const UPDATE_INTERVAL = 5000;
 
 // State
@@ -40,7 +40,7 @@ function animateNumber(element, target) {
   const increment = target > current ? 1 : -1;
   const steps = Math.abs(target - current);
   const duration = 1000;
-  const interval = duration / steps;
+  const interval = Math.max(10, Math.floor(duration / steps));
 
   let currentNum = current;
   const timer = setInterval(() => {
@@ -66,12 +66,16 @@ function renderRecentUsers(users) {
 
   let html = '';
   users.forEach(user => {
+    const username = user.username ? '@' + user.username : '-';
+    const fullname = user.fullname || '-';
+    const joinedAt = formatDate(user.joined_at);
+
     html += `
             <tr>
                 <td>${user.user_id}</td>
-                <td>${user.fullname || '-'}</td>
-                <td>${user.username ? '@' + user.username : '-'}</td>
-                <td>${formatDate(user.joined_at)}</td>
+                <td>${fullname}</td>
+                <td>${username}</td>
+                <td>${joinedAt}</td>
             </tr>
         `;
   });
@@ -84,12 +88,14 @@ async function fetchStats() {
   try {
     updateConnectionStatus('checking', 'Menghubungi server...');
 
+    console.log('Mengakses API:', API_URL);
+
     const response = await fetch(API_URL, {
       method: 'GET',
+      mode: 'cors',
       headers: {
         'Accept': 'application/json'
-      },
-      mode: 'cors'
+      }
     });
 
     if (!response.ok) {
@@ -97,15 +103,17 @@ async function fetchStats() {
     }
 
     const data = await response.json();
+    console.log('Data diterima:', data);
 
     if (data.success) {
-      // Update statistik
+      // Update total users
       if (!lastData || lastData.total_users !== data.total_users) {
         animateNumber(totalUsersEl, data.total_users);
       } else {
         totalUsersEl.textContent = data.total_users;
       }
 
+      // Update users today
       if (!lastData || lastData.users_today !== data.users_today) {
         animateNumber(usersTodayEl, data.users_today);
       } else {
