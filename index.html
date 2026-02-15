@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bot Telegram Statistics</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>📊 Bot Telegram Statistics</h1>
+            <p class="subtitle">Live counter pengguna bot</p>
+        </header>
+
+        <main>
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-icon">👥</div>
+                    <div class="stat-content">
+                        <h3>Total Pengguna</h3>
+                        <div class="stat-number" id="total-users">0</div>
+                    </div>
+                </div>
+
+                <div class="stat-card">
+                    <div class="stat-icon">📅</div>
+                    <div class="stat-content">
+                        <h3>Hari Ini</h3>
+                        <div class="stat-number" id="users-today">0</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="recent-users">
+                <h2>Pengguna Terbaru</h2>
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>User ID</th>
+                                <th>Nama</th>
+                                <th>Username</th>
+                                <th>Bergabung</th>
+                            </tr>
+                        </thead>
+                        <tbody id="recent-users-list">
+                            <tr>
+                                <td colspan="4" class="loading">Memuat data...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </main>
+
+        <footer>
+            <div class="status">
+                <span class="status-indicator" id="status-indicator"></span>
+                <span id="status-text">Menyambung ke server...</span>
+            </div>
+            <div class="last-updated">
+                Terakhir diperbarui: <span id="last-updated">-</span>
+            </div>
+            <p class="credit">Dibuat dengan ❤️ untuk Bot Telegram</p>
+        </footer>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
