@@ -5,7 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Gacha Username - Marketplace</title>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
-    <link href="/GAMES/static/css/gacha.css" rel="stylesheet">
+    <link href="/static/css/gacha.css" rel="stylesheet">
+    <base href="/">
 </head>
 <body>
     <div class="app-container">
@@ -111,8 +112,8 @@
             </div>
             <div class="modal-body">
                 <div class="success-content">
-                    <i class="fas fa-check-circle"></i>
-                    <p id="successMessage">Pembayaran berhasil!</p>
+                    <i class="fas fa-check-circle" style="font-size: 64px; color: #10b981;"></i>
+                    <p id="successMessage" style="font-size: 18px; margin-top: 20px;">Pembayaran berhasil!</p>
                 </div>
             </div>
         </div>
@@ -127,13 +128,25 @@
             </div>
             <div class="modal-body">
                 <div class="error-content">
-                    <i class="fas fa-exclamation-circle"></i>
-                    <p id="errorMessage">Terjadi kesalahan</p>
+                    <i class="fas fa-exclamation-circle" style="font-size: 64px; color: #ef4444;"></i>
+                    <p id="errorMessage" style="font-size: 18px; margin-top: 20px;">Terjadi kesalahan</p>
                 </div>
             </div>
         </div>
     </div>
 
     <script src="/static/js/gacha.js"></script>
+    <script>
+        // Debug: Cek koneksi
+        console.log('Gacha HTML loaded');
+        document.addEventListener('DOMContentLoaded', function() {
+            console.log('DOM Content Loaded');
+            if (typeof initDeposit === 'undefined') {
+                console.error('❌ Gacha.js tidak terload! Cek path: /static/js/gacha.js');
+            } else {
+                console.log('✅ Gacha.js loaded successfully');
+            }
+        });
+    </script>
 </body>
 </html>
