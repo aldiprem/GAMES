@@ -255,55 +255,51 @@ async function initDeposit() {
     }
 }
 
-// ============ FUNGSI DEPOSIT STARS YANG DIPERBAIKI (seperti di pay.py) ============
+// ============ FUNGSI DEPOSIT STARS DENGAN LINK FORMAT BARU ============
 function showPaymentModal(depositData) {
-    const modal = document.getElementById('paymentModal');
-    const paymentInfo = document.getElementById('paymentInfo');
-    const paymentLinkContainer = document.getElementById('paymentLinkContainer');
-    const paymentDetails = document.getElementById('paymentDetails');
-    const payButton = document.getElementById('payButton');
-    
-    const expiredTime = new Date(Date.now() + 300000).toLocaleTimeString();
-    
-    // Buat deep link untuk membuka bot langsung dengan start parameter
-    const botUsername = depositData.bot_username || 'YourBotUsername';
-    const startPayload = depositData.payload;
-    
-    // Deep link yang benar untuk membuka bot dengan parameter start
-    const telegramDeepLink = `https://t.me/${botUsername}?start=${startPayload}`;
-    
-    paymentInfo.innerHTML = `
+  const modal = document.getElementById('paymentModal');
+  const paymentInfo = document.getElementById('paymentInfo');
+  const paymentLinkContainer = document.getElementById('paymentLinkContainer');
+  const paymentDetails = document.getElementById('paymentDetails');
+  const payButton = document.getElementById('payButton');
+
+  const expiredTime = new Date(Date.now() + 300000).toLocaleTimeString();
+
+  // Gunakan payment_link dari response (format: https://t.me/$random_string)
+  const telegramDeepLink = depositData.payment_link;
+
+  paymentInfo.innerHTML = `
         <div class="payment-info-box">
             <p><strong>Jumlah Deposit:</strong> ${depositData.amount} ⭐</p>
             <p><strong>ID Transaksi:</strong> <span class="transaction-id">${depositData.transaction_id}</span></p>
             <p><strong>Batas Waktu:</strong> ${expiredTime}</p>
         </div>
     `;
-    
-    // Tampilkan instruksi yang jelas seperti di pay.py
-    paymentLinkContainer.innerHTML = `
+
+  // Tampilkan instruksi
+  paymentLinkContainer.innerHTML = `
         <div class="payment-steps" style="background: #f0f3ff; padding: 20px; border-radius: 15px; margin-bottom: 20px;">
-            <h4 style="margin-bottom: 15px; color: #333;">📋 Langkah Pembayaran:</h4>
+            <h4 style="margin-bottom: 15px; color: #333;">📋 Langkah Pembayaran Stars:</h4>
             
             <div style="margin-bottom: 20px;">
                 <div style="display: flex; align-items: center; margin-bottom: 15px;">
                     <div style="background: #667eea; color: white; width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin-right: 15px; font-weight: bold;">1</div>
-                    <div style="flex: 1;">Klik tombol <strong>"Bayar dengan Stars"</strong> di bawah</div>
+                    <div style="flex: 1;">Klik tombol <strong>"Bayar ${depositData.amount} ⭐"</strong> di bawah</div>
                 </div>
                 
                 <div style="display: flex; align-items: center; margin-bottom: 15px;">
                     <div style="background: #667eea; color: white; width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin-right: 15px; font-weight: bold;">2</div>
-                    <div style="flex: 1;">Klik tombol <strong>"PAY"</strong> di invoice Telegram</div>
+                    <div style="flex: 1;">Aplikasi Telegram akan terbuka</div>
                 </div>
                 
                 <div style="display: flex; align-items: center; margin-bottom: 15px;">
                     <div style="background: #667eea; color: white; width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin-right: 15px; font-weight: bold;">3</div>
-                    <div style="flex: 1;">Konfirmasi pembayaran dengan Stars Anda</div>
+                    <div style="flex: 1;">Klik tombol <strong>"PAY"</strong> di invoice Telegram</div>
                 </div>
                 
                 <div style="display: flex; align-items: center;">
                     <div style="background: #667eea; color: white; width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin-right: 15px; font-weight: bold;">4</div>
-                    <div style="flex: 1;">Saldo akan otomatis bertambah setelah pembayaran sukses</div>
+                    <div style="flex: 1;">Konfirmasi pembayaran dengan Stars Anda</div>
                 </div>
             </div>
             
@@ -314,7 +310,7 @@ function showPaymentModal(depositData) {
         </div>
         
         <div class="payment-link-box" style="text-align: center; margin-top: 20px;">
-            <p style="margin-bottom: 15px; color: #666;">Klik tombol di bawah untuk memulai pembayaran:</p>
+            <p style="margin-bottom: 15px; color: #666;">Klik tombol di bawah untuk membayar dengan Stars:</p>
             
             <a href="${telegramDeepLink}" 
                target="_blank" 
@@ -327,12 +323,12 @@ function showPaymentModal(depositData) {
             
             <p style="margin-top: 15px; font-size: 13px; color: #888;">
                 <i class="fas fa-info-circle"></i> 
-                Aplikasi Telegram akan terbuka secara otomatis
+                Link pembayaran: <code style="background: #f0f0f0; padding: 3px 6px; border-radius: 4px;">${telegramDeepLink}</code>
             </p>
         </div>
     `;
-    
-    paymentDetails.innerHTML = `
+
+  paymentDetails.innerHTML = `
         <div class="payment-details-box" style="background: #f8f9fa; border-radius: 10px; padding: 15px; font-size: 13px; margin-top: 20px;">
             <p><strong>🆔 Transaksi:</strong> <code style="background: #e9ecef; padding: 3px 6px; border-radius: 4px;">${depositData.transaction_id}</code></p>
             <p><strong>🤖 Bot:</strong> @${depositData.bot_username}</p>
@@ -340,15 +336,15 @@ function showPaymentModal(depositData) {
             <p><strong>⏱️ Kadaluarsa:</strong> ${expiredTime}</p>
         </div>
     `;
-    
-    payButton.style.display = 'inline-block';
-    payButton.innerHTML = '<i class="fab fa-telegram"></i> Bayar Sekarang';
-    payButton.onclick = () => {
-        window.open(telegramDeepLink, '_blank');
-        startPaymentCheck(depositData.payload);
-    };
-    
-    modal.classList.add('show');
+
+  payButton.style.display = 'inline-block';
+  payButton.innerHTML = '<i class="fab fa-telegram"></i> Bayar dengan Stars';
+  payButton.onclick = () => {
+    window.open(telegramDeepLink, '_blank');
+    startPaymentCheck(depositData.payload);
+  };
+
+  modal.classList.add('show');
 }
 
 function closePaymentModal() {
