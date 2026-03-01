@@ -138,40 +138,6 @@ EOF
     fi
 }
 
-stop_session() {
-    echo -e "${YELLOW}🛑 Menghentikan screen session: $SESSION_NAME${NC}"
-    
-    # Cek apakah session ada
-    if screen -ls | grep -q "$SESSION_NAME"; then
-        screen -S $SESSION_NAME -X quit
-        sleep 2
-        
-        if ! screen -ls | grep -q "$SESSION_NAME"; then
-            echo -e "${GREEN}✅ Session $SESSION_NAME dihentikan${NC}"
-            
-            # Kill any remaining processes
-            echo -e "${YELLOW}🔪 Membersihkan proses yang tersisa...${NC}"
-            pkill -f "python3 app.py" 2>/dev/null
-            pkill -f "python3 b.py" 2>/dev/null
-            rm -f session_* 2>/dev/null
-            
-            echo -e "${GREEN}✅ Semua proses dibersihkan${NC}"
-        else
-            echo -e "${RED}❌ Gagal menghentikan session, memaksa dengan kill...${NC}"
-            screen -S $SESSION_NAME -X kill
-            sleep 1
-            screen -wipe 2>/dev/null
-        fi
-    else
-        echo -e "${YELLOW}⚠️  Session $SESSION_NAME tidak ditemukan${NC}"
-        
-        # Tetap bersihkan proses
-        pkill -f "python3 app.py" 2>/dev/null
-        pkill -f "python3 b.py" 2>/dev/null
-        rm -f session_* 2>/dev/null
-    fi
-}
-
 check_status() {
     echo -e "${BLUE}📊 Status Screen Session:${NC}"
     echo -e "${BLUE}============================================${NC}"
