@@ -132,7 +132,6 @@ async def setup_deposit_handlers(client):
     
     @client.on(events.Raw)
     async def raw_payment_handler(event):
-        
         # Handle PRE-CHECKOUT QUERY
         if isinstance(event, types.UpdateBotPrecheckoutQuery):
             query_id = event.query_id
@@ -189,13 +188,6 @@ async def setup_deposit_handlers(client):
                             error="Transaction expired"
                         ))
                         return
-                    
-                    transactions[payload] = {
-                        'user_id': user_id,
-                        'amount': total_amount,
-                        'status': 'approved',
-                        'created_at': datetime.now().isoformat()
-                    }
                 
                 await event.client(functions.messages.SetBotPrecheckoutResultsRequest(
                     query_id=query_id,
