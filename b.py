@@ -1,766 +1,445 @@
-from telethon import TelegramClient, events
-from telethon.tl import functions, types
-import re
-import requests
-from bs4 import BeautifulSoup
-import asyncio
 import os
+import asyncio
 import logging
-import sys
 import random
-import hashlib
-import aiohttp
+import requests
+import json
 from datetime import datetime
 from dotenv import load_dotenv
+from telethon import TelegramClient, events, Button
+from telethon.tl import types, functions
+import pytz
 
 # Load environment variables
 load_dotenv()
 
-# Import database modules
-sys.path.append(os.path.dirname(__file__))
-from database import bot as db_bot
-from database import users as db_users
-from database import stok as db_stok
-from database import gacha as gacha_db
-import config
+# Database imports
+from py.gacha import SessionLocal, User, Transaction
 
-# Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ============ KONFIGURASI ============
-OWNER_IDS_STR = os.getenv('OWNER_IDS', '7998861975')
-OWNER_ID = [int(id.strip()) for id in OWNER_IDS_STR.split(',')]
-
-BOT_TOKEN = os.getenv('BOT_TOKEN')
-API_ID = int(os.getenv('API_ID', 0))
+API_ID = int(os.getenv('API_ID'))
 API_HASH = os.getenv('API_HASH')
-WEBSITE_URL = os.getenv('WEBSITE_URL', 'http://localhost:8000')
-SECRET_KEY = os.getenv('SECRET_KEY', 'your-secret-key-change-this')
-API_KEY = hashlib.sha256(SECRET_KEY.encode()).hexdigest()[:16]
+BOT_TOKEN = os.getenv('BOT_TOKEN')
+WEBHOOK_URL = os.getenv('WEBHOOK_URL')
 
-if not all([BOT_TOKEN, API_ID, API_HASH]):
-    logger.error("❌ Konfigurasi bot tidak lengkap. Pastikan .env sudah benar.")
-    sys.exit(1)
+bot = TelegramClient('stdeposit', API_ID, API_HASH)
 
-# ============ FUNGSI UTILITY ============
-def process_message(text):
-    lines = text.splitlines()
-    valid_usernames = [line.split()[0] for line in lines if "✅" in line]
-    if not valid_usernames:
-        return "Tidak ada username yang valid."
-    return ", ".join(valid_usernames)
+# Timezone Indonesia
+WIB = pytz.timezone('Asia/Jakarta')
 
-def is_valid_username(username):
-    return re.match(r'^[a-zA-Z0-9_]{5,32}$', username)
+def get_wib_time():
+    return datetime.now(WIB)
 
-async def check_telegram_username(client, username):
-    try:
-        await client.get_entity(username)
-        return "user"
-    except ValueError:
-        return "available"
-    except Exception as e:
-        logger.error(f"Error checking username {username}: {e}")
-        return None
-
-def check_fragment_username(username):
-    url = f"https://fragment.com/?filter={username}"
-    try:
-        response = requests.get(url, timeout=10)
-        soup = BeautifulSoup(response.text, 'html.parser')
-        if soup.find(string=username):
-            return "fragment"
-    except Exception as e:
-        logger.error(f"Error fetching fragment: {e}")
-    return None
-
-async def check_username_status(client, username):
-    if not is_valid_username(username):
-        return f"@{username} (invalid)"
+@bot.on(events.NewMessage(pattern='/start'))
+async def start(event):
+    # Simpan user ke database jika belum ada
+    db = SessionLocal()
+    user = db.query(User).filter(User.telegram_id == event.sender_id).first()
+    if not user:
+        user = User(
+            telegram_id=event.sender_id,
+            username=event.sender.username,
+            first_name=event.sender.first_name,
+            last_name=event.sender.last_name
+        )
+        db.add(user)
+        db.commit()
+    db.close()
     
-    telegram_status = await check_telegram_username(client, username)
-    if telegram_status == "user":
-        return f"@{username} (user)"
-    elif telegram_status == "available":
-        fragment_status = check_fragment_username(username)
-        if fragment_status:
-            return f"@{username} (fragment)"
-        return f"@{username} (✅)"
-    return f"@{username} (❓)"
+    await event.respond(
+        "💰 **Selamat Datang di Deposit Bot** 💰\n\n"
+        "Bot ini menerima deposit menggunakan **Telegram Stars** ⭐\n\n"
+        "**Cara Deposit:**\n"
+        "Ketik: `/deposit <jumlah_stars>`\n"
+        "Contoh: `/deposit 2`\n\n"
+        "**Website:**\n"
+        f"• Kunjungi {WEBHOOK_URL} untuk cek saldo"
+    )
 
-async def check_multiple_usernames(client, usernames):
-    results = await asyncio.gather(*(check_username_status(client, username) for username in usernames))
-    return "\n".join(results)
-
-def generate_variations(word):
-    alphabet = 'abcdefghijklmnopqrstuvwxyz'
-    grouped_results = []
-    for pos in range(len(word) + 1):
-        group = []
-        for letter in alphabet:
-            new_word = '@' + word[:pos] + letter + word[pos:]
-            group.append(new_word)
-        grouped_results.append(", ".join(group))
-    return grouped_results
-
-# ============ FUNGSI DEPOSIT ============
-async def notify_website_payment_success(charge_id, payload, user_id, amount):
+@bot.on(events.NewMessage(pattern='/deposit'))
+async def deposit_handler(event):
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(f"{WEBSITE_URL}/gacha/api/deposit/verify", json={
-                'charge_id': charge_id,
-                'payload': payload,
-                'user_id': user_id,
-                'amount': amount,
-                'api_key': API_KEY
-            }) as response:
-                if response.status == 200:
-                    result = await response.json()
-                    logger.info(f"✅ Website notification sent: {result}")
-                    return True
-                else:
-                    logger.error(f"❌ Failed to notify website: {response.status}")
-                    return False
-    except Exception as e:
-        logger.error(f"❌ Error notifying website: {e}")
-        return False
-
-# ============ FUNGSI UTAMA BOT ============
-async def run_bot(config):
-    session_name = f"session_{config['bot_token'].split(':')[0]}"
-    client = TelegramClient(session_name, config['api_id'], config['api_hash'])
-    
-    # Dictionary untuk menyimpan transaksi sementara (per client)
-    temp_transactions = {}
-    
-    try:
-        await client.start(bot_token=config['bot_token'])
-        logger.info(f"Bot started with token: {config['bot_token'][:10]}...")
+        command = event.message.text.split()
+        if len(command) != 2:
+            await event.respond("❌ Format: `/deposit <jumlah>`")
+            return
         
-        me = await client.get_me()
-        db_bot.update_bot_info(config['bot_token'], me.username, str(me.id))
+        amount = int(command[1])
+        if amount <= 0 or amount > 2500:
+            await event.respond("❌ Jumlah tidak valid (1-2500)")
+            return
         
-        bot_type = "🔵 BOT UTAMA" if config.get('is_main') else "🟢 BOT CLONE"
-        print(f"\n{'='*50}")
-        print(f"{bot_type} BERHASIL JALAN!")
-        print(f"Username: @{me.username}")
-        print(f"Bot ID: {me.id}")
-        print(f"{'='*50}\n")
-
-        # ============ HANDLER UNTUK START (DENGAN PAYMENT LINK) ============
-        @client.on(events.NewMessage(pattern='/start'))
-        async def start_handler(event):
-            """Handle /start command with payload parameter"""
-            
-            # Parse parameter jika ada
-            if event.message.text.startswith('/start '):
-                payload = event.message.text[7:].strip()  # Ambil setelah /start 
-                
-                # Cek apakah ini link payment (format: $random_string)
-                if payload.startswith('$'):
-                    # Ini adalah payment link dari gacha system
-                    link_id = payload[1:]  # Hapus karakter $
-                    await handle_payment_link(event, link_id)
-                    return
-                
-                elif payload.startswith('deposit:'):
-                    # Ini adalah request deposit (format lama)
-                    await handle_deposit_payload(event, payload)
-                    return
-            
-            # Default response
-            await event.respond(
-                "🤖 **Bot Gacha Username**\n\n"
-                "Bot ini digunakan untuk memproses pembayaran deposit dari website.\n\n"
-                f"🌐 **Website:** {WEBSITE_URL}\n"
-                f"💰 **Deposit:** Minimal 1 Stars\n\n"
-                "Silakan lakukan deposit melalui website untuk mendapatkan saldo.\n\n"
-                "📝 **Test Deposit:** /deposit <jumlah>"
+        user_id = event.sender_id
+        timestamp = int(get_wib_time().timestamp())
+        
+        # Buat payload unik
+        payload = f"deposit:{user_id}:{amount}:{random.randint(1000, 9999)}:{timestamp}"
+        
+        # Simpan ke database
+        db = SessionLocal()
+        
+        # Dapatkan user
+        user = db.query(User).filter(User.telegram_id == user_id).first()
+        if not user:
+            user = User(
+                telegram_id=user_id,
+                username=event.sender.username,
+                first_name=event.sender.first_name,
+                last_name=event.sender.last_name
             )
-
-        async def handle_payment_link(event, link_id):
-            """Handle payment link dari gacha system"""
-            try:
-                logger.info(f"Payment link clicked: {link_id}")
-                
-                # Dapatkan payload dari database berdasarkan link_id
-                link_data = gacha_db.get_payload_from_link(link_id)
-                
-                if not link_data:
-                    await event.respond(
-                        "❌ **Link pembayaran tidak valid atau sudah kadaluarsa.**\n\n"
-                        "Silakan buat deposit baru melalui website."
-                    )
-                    return
-                
-                payload = link_data['payload']
-                trans_id = link_data['transaction_id']
-                
-                # Parse payload: deposit:user_id:amount:timestamp:random
-                if payload.startswith('deposit:'):
-                    parts = payload.split(':')
-                    if len(parts) == 5:
-                        user_id = int(parts[1])
-                        amount = int(parts[2])
-                        
-                        # Validasi user
-                        if event.sender_id != user_id:
-                            await event.respond(
-                                "❌ **User tidak sesuai.**\n\n"
-                                "Link ini khusus untuk user dengan ID yang berbeda."
-                            )
-                            return
-                        
-                        # Simpan di temp_transactions (seperti di pay.py)
-                        temp_transactions[payload] = {
-                            'user_id': user_id,
-                            'amount': amount,
-                            'transaction_id': trans_id,
-                            'status': 'pending',
-                            'created_at': datetime.now().isoformat()
-                        }
-                        
-                        # Kirim invoice Stars
-                        await send_stars_invoice(event, amount, payload)
-                        return
-                
-                await event.respond("❌ Format payload tidak valid.")
-                
-            except Exception as e:
-                logger.error(f"Error handling payment link: {e}")
-                await event.respond("❌ Terjadi kesalahan. Silakan coba lagi.")
-
-        async def handle_deposit_payload(event, payload):
-            """Handle deposit payload (format lama)"""
-            try:
-                parts = payload.split(':')
-                if len(parts) == 5:
-                    user_id = int(parts[1])
-                    amount = int(parts[2])
-                    
-                    if event.sender_id != user_id:
-                        await event.respond("❌ User ID tidak sesuai dengan transaksi")
-                        return
-                    
-                    # Simpan di temp_transactions
-                    temp_transactions[payload] = {
-                        'user_id': user_id,
-                        'amount': amount,
-                        'status': 'pending',
-                        'created_at': datetime.now().isoformat()
-                    }
-                    
-                    # Kirim invoice untuk pembayaran Stars
-                    await send_stars_invoice(event, amount, payload)
-                    return
-            except Exception as e:
-                logger.error(f"Error handling deposit payload: {e}")
-                await event.respond("❌ Terjadi kesalahan.")
-
-        # ============ FUNGSI SEND INVOICE (PERSIS SEPERTI PAY.PY) ============
-        async def send_stars_invoice(event, amount, payload):
-            """Kirim invoice Stars ke user (persis seperti di pay.py)"""
-            try:
-                logger.info(f"Sending invoice for {amount} stars with payload: {payload}")
-                
-                # Pastikan amount adalah integer
-                amount = int(amount)
-                
-                # Buat invoice dengan parameter yang benar (persis seperti pay.py)
-                invoice = types.Invoice(
-                    currency="XTR",
-                    prices=[
-                        types.LabeledPrice(
-                            label=f"Deposit {amount} Stars",
-                            amount=amount
-                        )
-                    ]
-                )
-                
-                # Buat media invoice PERSIS seperti di pay.py
-                # Di pay.py: provider=None, provider_data=types.DataJSON(data='{}')
-                media = types.InputMediaInvoice(
-                    title="💰 Deposit Stars",
-                    description=f"Deposit {amount} ⭐ ke saldo Gacha Username",
-                    photo=None,
-                    invoice=invoice,
-                    payload=payload.encode('utf-8'),
-                    provider=None,  # None seperti di pay.py
-                    provider_data=types.DataJSON(data='{}'),  # Ini yang bener!
-                    start_param="deposit"
-                )
-                
-                # Kirim pesan dengan media
-                result = await event.client(functions.messages.SendMediaRequest(
-                    peer=await event.client.get_input_entity(event.chat_id),
-                    media=media,
-                    message=f"🧾 **INVOICE DEPOSIT**\n\n"
-                            f"Jumlah: **{amount} ⭐**\n\n"
-                            f"Klik tombol **PAY {amount} ⭐** di bawah untuk membayar.",
-                    random_id=random.randint(1, 2**63)
-                ))
-                
-                logger.info(f"Invoice sent to user {event.sender_id} for {amount} stars")
-                
-            except Exception as e:
-                logger.error(f"Error sending invoice: {e}")
-                import traceback
-                traceback.print_exc()
-                await event.respond(f"❌ Gagal mengirim invoice: {str(e)}")
-
-        # ============ HANDLER UNTUK RAW PAYMENT (PRE-CHECKOUT & SUCCESS) ============
-        @client.on(events.Raw)
-        async def raw_payment_handler(event):
-            """Handler untuk semua raw updates (seperti di pay.py)"""
-            
-            # HANDLE PRE-CHECKOUT QUERY
-            if isinstance(event, types.UpdateBotPrecheckoutQuery):
-                query_id = event.query_id
-                user_id = event.user_id
-                payload = event.payload.decode() if event.payload else ""
-                currency = event.currency
-                total_amount = event.total_amount
-                
-                logger.info(f"💰 PRE-CHECKOUT: User {user_id}, Amount {total_amount} {currency}, Payload: {payload}")
-                
-                try:
-                    # Validasi currency
-                    if currency != 'XTR':
-                        await event.client(functions.messages.SetBotPrecheckoutResultsRequest(
-                            query_id=query_id,
-                            success=False,
-                            error="Hanya menerima Telegram Stars"
-                        ))
-                        return
-                    
-                    # Cek di temp_transactions dulu
-                    if payload in temp_transactions:
-                        trans = temp_transactions[payload]
-                        
-                        # Validasi user
-                        if trans['user_id'] != user_id:
-                            await event.client(functions.messages.SetBotPrecheckoutResultsRequest(
-                                query_id=query_id,
-                                success=False,
-                                error="User tidak sesuai"
-                            ))
-                            return
-                        
-                        # Validasi jumlah
-                        if total_amount != trans['amount']:
-                            await event.client(functions.messages.SetBotPrecheckoutResultsRequest(
-                                query_id=query_id,
-                                success=False,
-                                error="Jumlah tidak sesuai"
-                            ))
-                            return
-                        
-                        # APPROVE
-                        await event.client(functions.messages.SetBotPrecheckoutResultsRequest(
-                            query_id=query_id,
-                            success=True
-                        ))
-                        logger.info(f"✅ Pre-checkout approved for user {user_id} (from temp)")
-                        temp_transactions[payload]['pre_checkout_approved'] = True
-                        return
-                    
-                    # Cek di database
-                    if payload.startswith('deposit:'):
-                        parts = payload.split(':')
-                        if len(parts) == 5:
-                            user_id_from_payload = int(parts[1])
-                            amount_from_payload = int(parts[2])
-                            
-                            if user_id_from_payload != user_id:
-                                await event.client(functions.messages.SetBotPrecheckoutResultsRequest(
-                                    query_id=query_id,
-                                    success=False,
-                                    error="User mismatch"
-                                ))
-                                return
-                            
-                            if total_amount != amount_from_payload:
-                                await event.client(functions.messages.SetBotPrecheckoutResultsRequest(
-                                    query_id=query_id,
-                                    success=False,
-                                    error="Amount mismatch"
-                                ))
-                                return
-                            
-                            trans = gacha_db.get_pending_deposit(payload)
-                            if not trans:
-                                await event.client(functions.messages.SetBotPrecheckoutResultsRequest(
-                                    query_id=query_id,
-                                    success=False,
-                                    error="Transaction expired"
-                                ))
-                                return
-                            
-                            # APPROVE
-                            await event.client(functions.messages.SetBotPrecheckoutResultsRequest(
-                                query_id=query_id,
-                                success=True
-                            ))
-                            logger.info(f"✅ Pre-checkout approved for user {user_id} (from DB)")
-                            return
-                    
-                    # Jika tidak ditemukan
-                    await event.client(functions.messages.SetBotPrecheckoutResultsRequest(
-                        query_id=query_id,
-                        success=False,
-                        error="Transaksi tidak valid"
-                    ))
-                    
-                except Exception as e:
-                    logger.error(f"Error in pre-checkout: {e}")
-                    try:
-                        await event.client(functions.messages.SetBotPrecheckoutResultsRequest(
-                            query_id=query_id,
-                            success=False,
-                            error="Terjadi kesalahan sistem"
-                        ))
-                    except:
-                        pass
-            
-            # HANDLE SUCCESSFUL PAYMENT
-            elif isinstance(event, types.UpdateNewMessage):
-                message = event.message
-                
-                if not message or not hasattr(message, 'action'):
-                    return
-                
-                if isinstance(message.action, types.MessageActionPaymentSentMe):
-                    try:
-                        payment = message.action
-                        user_id = message.peer_id.user_id
-                        currency = payment.currency
-                        total_amount = payment.total_amount
-                        payload = payment.payload.decode() if payment.payload else ""
-                        charge_id = payment.charge.id
-                        
-                        logger.info(f"🎉 PAYMENT SUCCESS! User {user_id}, Charge ID {charge_id}, Amount {total_amount} {currency}")
-                        
-                        # Kirim notifikasi ke website
-                        if payload.startswith('deposit:'):
-                            # Cek di temp_transactions dulu
-                            if payload in temp_transactions:
-                                logger.info(f"Payment from temp transaction: {payload}")
-                                del temp_transactions[payload]
-                            
-                            # Verifikasi ke website
-                            success = await notify_website_payment_success(
-                                charge_id=charge_id,
-                                payload=payload,
-                                user_id=user_id,
-                                amount=total_amount
-                            )
-                            
-                            if success:
-                                await event.client.send_message(
-                                    user_id,
-                                    f"✅ **DEPOSIT BERHASIL!**\n\n"
-                                    f"💰 Jumlah: {total_amount} ⭐\n"
-                                    f"🆔 Transaksi: `{charge_id}`\n\n"
-                                    f"Saldo Anda telah bertambah. Silakan kembali ke website.\n\n"
-                                    f"🌐 {WEBSITE_URL}"
-                                )
-                            else:
-                                # Coba lagi nanti atau manual
-                                await event.client.send_message(
-                                    user_id,
-                                    f"✅ **PEMBAYARAN DITERIMA!**\n\n"
-                                    f"💰 Jumlah: {total_amount} ⭐\n"
-                                    f"🆔 Transaksi: `{charge_id}`\n\n"
-                                    f"Sedang memproses penambahan saldo. Silakan tunggu beberapa saat.\n"
-                                    f"Jika saldo tidak bertambah dalam 5 menit, hubungi admin."
-                                )
-                            
-                            logger.info(f"✅ Payment processed for user {user_id}: {total_amount} stars")
-                        
-                    except Exception as e:
-                        logger.error(f"Error processing payment: {e}")
-                        import traceback
-                        traceback.print_exc()
-
-        # ============ HANDLER UNTUK TEST DEPOSIT ============
-        @client.on(events.NewMessage(pattern='/deposit'))
-        async def deposit_test_handler(event):
-            """Handler untuk test deposit via command"""
-            try:
-                # Parse jumlah
-                parts = event.message.text.split()
-                if len(parts) != 2:
-                    await event.respond(
-                        "❌ **Format salah!**\n\n"
-                        "Gunakan: `/deposit <jumlah>`\n"
-                        "Contoh: `/deposit 10`"
-                    )
-                    return
-                
-                try:
-                    amount = int(parts[1])
-                    if amount < 1:
-                        await event.respond("❌ Jumlah minimal 1 ⭐")
-                        return
-                    if amount > 2500:
-                        await event.respond("❌ Maksimal 2500 ⭐")
-                        return
-                except ValueError:
-                    await event.respond("❌ Jumlah harus angka")
-                    return
-                
-                # Generate payload untuk test
-                user_id = event.sender_id
-                timestamp = int(datetime.now().timestamp())
-                random_code = random.randint(1000, 9999)
-                payload = f"deposit:{user_id}:{amount}:{timestamp}:{random_code}"
-                
-                # Simpan di temp_transactions
-                temp_transactions[payload] = {
-                    'user_id': user_id,
-                    'amount': amount,
-                    'status': 'pending',
-                    'created_at': datetime.now().isoformat(),
-                    'test_mode': True
-                }
-                
-                # Kirim invoice
-                await send_stars_invoice(event, amount, payload)
-                
-            except Exception as e:
-                logger.error(f"Error in deposit_test_handler: {e}")
-                await event.respond(f"❌ Error: {str(e)}")
-
-        # ============ HANDLER UNTUK BALANCE (MENGGUNAKAN METODE DARI PAY.PY) ============
-        @client.on(events.NewMessage(pattern='/balance'))
-        async def balance_handler(event):
-            """Cek saldo Stars bot (menggunakan metode dari pay.py)"""
-            if event.sender_id not in OWNER_ID:
-                await event.respond("❌ Perintah ini hanya untuk owner")
-                return
-            
-            try:
-                # Metode dari pay.py - GetStarsBalanceRequest
-                result = await client(functions.payments.GetStarsBalanceRequest())
-                balance = result.balance
-                
-                await event.respond(f"💰 **SALDO BOT STARS:** {balance} ⭐")
-                
-            except Exception as e:
-                logger.error(f"Error in balance_handler: {e}")
-                await event.respond(f"❌ Gagal mendapatkan saldo: {str(e)}")
-
-        # ============ HANDLER LAINNYA ============
-        @client.on(events.NewMessage(pattern='/help'))
-        async def help_handler(event):
-            if event.sender_id not in OWNER_ID:
-                return
-            
-            help_text = "**PERINTAH YANG TERSEDIA:**\n\n"
-            help_text += "/edit <kata> - Buat variasi username\n"
-            help_text += "/check <username> - Cek ketersediaan username\n"
-            help_text += "/ubah <teks> - Proses hasil check\n"
-            help_text += "/balance - Cek saldo Stars bot\n"
-            help_text += "/deposit <jumlah> - Test deposit Stars\n"
-            
-            if config.get('is_main'):
-                help_text += "\n**PERINTAH BOT UTAMA:**\n"
-                help_text += "/clone - Tambah bot clone\n"
-                help_text += "/listbots - Lihat daftar bot\n"
-                help_text += "/delbot <token> - Hapus bot clone\n"
-                help_text += "/totalbots - Statistik bot\n"
-            
-            await event.respond(help_text)
-
-        @client.on(events.NewMessage(pattern='/ubah'))
-        async def ubah_handler(event):
-            if event.sender_id not in OWNER_ID:
-                return
-            
-            user_input = event.message.text.split('/ubah', maxsplit=1)[1].strip()
-            if user_input:
-                result = process_message(user_input)
-                if result:
-                    if "✅" in result:
-                        lines = result.split('\n')
-                        available = []
-                        for line in lines:
-                            if "✅" in line:
-                                username = line.split()[0].replace('@', '')
-                                available.append(f"@{username}")
-                        if available:
-                            db_stok.add_usernames(', '.join(available))
-                    
-                    await event.respond(f"`/check {result}`")
-                else:
-                    await event.respond("Tidak ada username valid ditemukan.")
-            else:
-                await event.respond("Format salah. Gunakan: /ubah <teks>.")
-
-        @client.on(events.NewMessage(pattern='/check'))
-        async def check_handler(event):
-            if event.sender_id not in OWNER_ID:
-                return
-            
-            user_input = event.message.text.split('/check', maxsplit=1)[1].strip()
-            usernames = [u.strip('@ ') for u in user_input.split(',')]
-            result = await check_multiple_usernames(client, usernames)
-            
-            if result:
-                await event.respond(f"`/ubah {result}`")
-            else:
-                await event.respond("Tidak ada username valid.")
-
-        @client.on(events.NewMessage(pattern='/edit'))
-        async def edit_handler(event):
-            if event.sender_id not in OWNER_ID:
-                return
+            db.add(user)
+            db.commit()
+            db.refresh(user)
         
-            text = event.message.text.split(' ', 1)
-            if len(text) < 2:
-                await event.reply('Kirimkan format: /edit <kata>')
-                return
+        # Buat transaksi
+        transaction = Transaction(
+            user_id=user.id,
+            amount=amount,
+            payload=payload,
+            status='pending',
+            created_at=get_wib_time()
+        )
+        db.add(transaction)
+        db.commit()
+        db.close()
         
-            word = text[1]
-            variations = generate_variations(word)
-            all_variations = ", ".join(variations)
+        # Panggil Bot API untuk createInvoiceLink
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/createInvoiceLink"
         
-            try:
-                if len(all_variations) > 4096:
-                    chunks = [all_variations[i:i+4096] for i in range(0, len(all_variations), 4096)]
-                    for chunk in chunks:
-                        await event.reply(chunk)
-                else:
-                    await event.reply(f"`/check {all_variations}`")
-            except Exception as e:
-                logger.error(f"Error: {e}")
-
-        # HANDLER KHUSUS BOT UTAMA
-        if config.get('is_main'):
-            @client.on(events.NewMessage(pattern='/clone'))
-            async def clone_handler(event):
-                if event.sender_id not in OWNER_ID:
-                    return
-                
-                if not event.message.is_reply:
-                    await event.reply("Silakan reply ke pesan yang berisi format API ID, API HASH, dan BOT_TOKEN")
-                    return
-                
-                replied = await event.get_reply_message()
-                text = replied.text
-                
-                api_id_match = re.search(r'API_ID:\s*(\d+)', text)
-                api_hash_match = re.search(r'API_HASH:\s*(\w+)', text)
-                bot_token_match = re.search(r'BOT_TOKEN:\s*([\w:]+)', text)
-                
-                if not all([api_id_match, api_hash_match, bot_token_match]):
-                    await event.reply("Format tidak valid. Gunakan format:\nAPI_ID: 1234567890\nAPI_HASH: AnoNO61bJ7...\nBOT_TOKEN: 1234567890:Bai17bJab...")
-                    return
-                
-                api_id = api_id_match.group(1)
-                api_hash = api_hash_match.group(1)
-                bot_token = bot_token_match.group(1)
-                
-                if db_bot.save_bot(api_id, api_hash, bot_token, is_main=False):
-                    await event.reply(f"✅ Bot clone berhasil ditambahkan. Restarting...")
-                    os._exit(0)
-                else:
-                    await event.reply("❌ Bot dengan token tersebut sudah ada")
-
-            @client.on(events.NewMessage(pattern='/listbots'))
-            async def list_bots_handler(event):
-                if event.sender_id not in OWNER_ID:
-                    return
-                
-                bots = db_bot.get_all_bots()
-                if not bots:
-                    await event.reply("Tidak ada bot yang terdaftar")
-                    return
-                
-                message = "**📋 DAFTAR BOT:**\n\n"
-                for i, bot in enumerate(bots, 1):
-                    bot_type = "🔵 BOT UTAMA" if bot['is_main'] else "🟢 BOT CLONE"
-                    message += f"{i}. {bot_type}\n"
-                    message += f"   👤 @{bot['username'] or 'Unknown'}\n"
-                    message += f"   🆔 ID: {bot['bot_id'] or 'Unknown'}\n"
-                    message += f"   🔑 Token: {bot['bot_token'][:15]}...\n\n"
-                
-                await event.reply(message)
-
-            @client.on(events.NewMessage(pattern='/delbot'))
-            async def delete_bot_handler(event):
-                if event.sender_id not in OWNER_ID:
-                    return
-                
-                args = event.message.text.split()
-                if len(args) != 2:
-                    await event.reply("Gunakan: /delbot <token_awal_bot>")
-                    return
-                
-                token_prefix = args[1]
-                bots = db_bot.get_all_bots()
-                
-                bot_to_delete = None
-                for bot in bots:
-                    if bot['bot_token'].startswith(token_prefix) and not bot['is_main']:
-                        bot_to_delete = bot
-                        break
-                
-                if not bot_to_delete:
-                    await event.reply("❌ Bot tidak ditemukan")
-                    return
-                
-                if db_bot.delete_bot(bot_to_delete['bot_token']):
-                    await event.reply(f"✅ Bot @{bot_to_delete.get('username', 'Unknown')} telah dihapus. Restarting...")
-                    os._exit(0)
-                else:
-                    await event.reply("❌ Gagal menghapus bot")
-
-            @client.on(events.NewMessage(pattern='/totalbots'))
-            async def total_bots_handler(event):
-                if event.sender_id not in OWNER_ID:
-                    return
-                stats = db_bot.get_bot_stats()
-                await event.reply(f"📊 **STATISTIK BOT:**\n\n🔵 Bot Utama: {stats['main']}\n🟢 Bot Clone: {stats['clone']}\n📌 Total: {stats['total']}")
-
-        print(f"✅ Semua handler untuk @{me.username} telah terdaftar!")
-        await client.run_until_disconnected()
+        data = {
+            "title": f"Deposit {amount} Stars",
+            "description": f"Deposit {amount} Telegram Stars",
+            "payload": payload,
+            "currency": "XTR",
+            "prices": [{"label": f"Deposit {amount} ⭐", "amount": amount}],
+            "provider_token": ""
+        }
+        
+        response = requests.post(url, json=data)
+        result = response.json()
+        
+        if result.get("ok"):
+            invoice_link = result["result"]
+            
+            buttons = [[Button.url(f"💳 Bayar {amount} ⭐", invoice_link)]]
+            
+            await event.respond(
+                f"🧾 **LINK DEPOSIT**\n\n"
+                f"💰 Jumlah: `{amount}` Stars\n\n"
+                f"Klik tombol di bawah untuk membayar:",
+                buttons=buttons
+            )
+        else:
+            await event.respond(f"❌ Gagal: {result.get('description')}")
         
     except Exception as e:
-        logger.error(f"Error pada bot: {e}")
-    finally:
-        await client.disconnect()
+        logger.error(f"Error in deposit_handler: {e}")
+        await event.respond("❌ Terjadi kesalahan")
+
+@bot.on(events.Raw)
+async def raw_handler(event):
+    # HANDLE PRE-CHECKOUT QUERY
+    if isinstance(event, types.UpdateBotPrecheckoutQuery):
+        query_id = event.query_id
+        user_id = event.user_id
+        payload = event.payload.decode() if event.payload else ""
+        currency = event.currency
+        total_amount = event.total_amount
+        
+        logger.info(f"Pre-checkout received: User {user_id}, Amount {total_amount} {currency}, Payload {payload}")
+        
+        db = SessionLocal()
+        try:
+            # Cari transaksi di database
+            transaction = db.query(Transaction).filter(Transaction.payload == payload).first()
+            
+            if not transaction:
+                await bot(functions.messages.SetBotPrecheckoutResultsRequest(
+                    query_id=query_id,
+                    success=False,
+                    error="Transaksi tidak valid"
+                ))
+                return
+            
+            if transaction.user.telegram_id != user_id:
+                await bot(functions.messages.SetBotPrecheckoutResultsRequest(
+                    query_id=query_id,
+                    success=False,
+                    error="User tidak sesuai"
+                ))
+                return
+            
+            if currency != 'XTR' or total_amount != transaction.amount:
+                await bot(functions.messages.SetBotPrecheckoutResultsRequest(
+                    query_id=query_id,
+                    success=False,
+                    error="Jumlah tidak sesuai"
+                ))
+                return
+            
+            # APPROVE
+            await bot(functions.messages.SetBotPrecheckoutResultsRequest(
+                query_id=query_id,
+                success=True
+            ))
+            
+            logger.info(f"Pre-checkout approved for payload {payload}")
+            
+        except Exception as e:
+            logger.error(f"Error in pre_checkout: {e}")
+        finally:
+            db.close()
+    
+    # HANDLE SUCCESSFUL PAYMENT
+    elif isinstance(event, types.UpdateNewMessage):
+        message = event.message
+        
+        if not message or not hasattr(message, 'action'):
+            return
+        
+        if isinstance(message.action, types.MessageActionPaymentSentMe):
+            try:
+                payment = message.action
+                user_id = message.peer_id.user_id
+                payload = payment.payload.decode() if payment.payload else ""
+                charge_id = payment.charge.id
+                total_amount = payment.total_amount
+                
+                logger.info(f"PAYMENT SUCCESS! User {user_id}, Charge ID {charge_id}")
+                
+                db = SessionLocal()
+                
+                # Cari transaksi
+                transaction = db.query(Transaction).filter(Transaction.payload == payload).first()
+                
+                if transaction and transaction.status == 'pending':
+                    # Update transaksi
+                    transaction.status = 'completed'
+                    transaction.charge_id = charge_id
+                    transaction.completed_at = get_wib_time()
+                    
+                    # Update saldo user
+                    user = transaction.user
+                    user.balance += total_amount
+                    
+                    db.commit()
+                    
+                    # Kirim konfirmasi
+                    waktu = get_wib_time().strftime('%d/%m/%Y %H:%M:%S')
+                    await bot.send_message(
+                        user_id,
+                        f"✅ **DEPOSIT BERHASIL!**\n\n"
+                        f"💰 **Jumlah:** {total_amount} ⭐\n"
+                        f"🆔 **Transaksi:** `{charge_id}`\n"
+                        f"📅 **Waktu:** {waktu}\n\n"
+                        f"Terima kasih telah melakukan deposit! 🎉"
+                    )
+                    
+                    logger.info(f"Deposit completed for user {user_id}")
+                
+                db.close()
+                
+            except Exception as e:
+                logger.error(f"Error processing payment: {e}")
+
+@bot.on(events.NewMessage(pattern='/balance'))
+async def balance_handler(event):
+    admin_ids = [7998861975]
+    
+    if event.sender_id not in admin_ids:
+        await event.respond("❌ Perintah ini hanya untuk admin")
+        return
+    
+    try:
+        result = await bot(functions.payments.GetStarsBalanceRequest())
+        balance = result.balance
+        
+        await event.respond(f"💰 **SALDO BOT:** `{balance}` ⭐")
+        
+    except Exception as e:
+        logger.error(f"Error in balance_handler: {e}")
+        await event.respond("❌ Gagal mendapatkan saldo")
+
+@bot.on(events.NewMessage(pattern='/stats'))
+async def stats_handler(event):
+    admin_ids = [7998861975]
+    
+    if event.sender_id not in admin_ids:
+        await event.respond("❌ Perintah ini hanya untuk admin")
+        return
+    
+    db = SessionLocal()
+    
+    total_users = db.query(User).count()
+    total_transactions = db.query(Transaction).filter(Transaction.status == 'completed').count()
+    total_stars = db.query(Transaction).filter(Transaction.status == 'completed').with_entities(db.func.sum(Transaction.amount)).scalar() or 0
+    pending = db.query(Transaction).filter(Transaction.status == 'pending').count()
+    
+    db.close()
+    
+    await event.respond(
+        f"📊 **STATISTIK**\n\n"
+        f"👥 Total User: {total_users}\n"
+        f"✅ Transaksi Sukses: {total_transactions}\n"
+        f"💰 Total Stars: {total_stars} ⭐\n"
+        f"⏳ Pending: {pending}"
+    )
+
+@bot.on(events.NewMessage(pattern='/refund'))
+async def refund_handler(event):
+    """
+    Refund deposit Stars
+    Format: /refund <user_id> <telegram_payment_charge_id>
+    """
+    admin_ids = [7998861975]  # ID owner bot
+    
+    if event.sender_id not in admin_ids:
+        await event.respond("❌ Perintah ini hanya untuk owner bot")
+        return
+    
+    parts = event.message.text.split()
+    if len(parts) != 3:
+        await event.respond(
+            "📌 **Cara Refund:**\n"
+            "`/refund <user_id> <telegram_payment_charge_id>`\n\n"
+            "Contoh:\n"
+            "`/refund 7998861975 stxWMsESZh95IM-lsM8wEYqzsRSaRbYrISfS3lOK9ZLW9ZP53KKc2jia_YGOHzWglVnGZS2r4jfZMrqixsjmeRD6iWH8ni4iJ29QK2lz5HvXsI`"
+        )
+        return
+    
+    try:
+        user_id = int(parts[1].strip())
+        charge_id = parts[2].strip()
+        
+        if not charge_id:
+            await event.respond("❌ Charge ID tidak boleh kosong")
+            return
+        
+        # Konfirmasi ke admin
+        confirm_msg = await event.respond(
+            f"⚠️ **Konfirmasi Refund**\n\n"
+            f"User ID: `{user_id}`\n"
+            f"Charge ID: `{charge_id}`\n\n"
+            f"Yakin ingin refund?\n"
+            f"Ketik **YA** untuk konfirmasi, atau **TIDAK** untuk batal."
+        )
+        
+        # Simpan data sementara
+        event.client.refund_data = {
+            'user_id': user_id,
+            'charge_id': charge_id,
+            'confirm_msg_id': confirm_msg.id,
+            'chat_id': event.chat_id
+        }
+        
+    except ValueError:
+        await event.respond("❌ User ID harus berupa angka")
+    except Exception as e:
+        await event.respond(f"❌ Error: {str(e)}")
+
+@bot.on(events.NewMessage)
+async def handle_refund_confirmation(event):
+    """Menangani konfirmasi refund dari admin"""
+    if not hasattr(event.client, 'refund_data'):
+        return
+    
+    refund_data = event.client.refund_data
+    user_id = refund_data['user_id']
+    charge_id = refund_data['charge_id']
+    
+    text = event.message.text.strip().upper()
+    
+    if text == 'YA':
+        processing_msg = await event.respond("⏳ **Memproses refund...**")
+        
+        try:
+            # Proses refund via API
+            result = await bot(functions.payments.RefundStarsChargeRequest(
+                user_id=await bot.get_input_entity(user_id),
+                charge_id=charge_id
+            ))
+            
+            await processing_msg.delete()
+            
+            # Hapus pesan konfirmasi
+            try:
+                await bot.delete_messages(
+                    refund_data['chat_id'],
+                    [refund_data['confirm_msg_id']]
+                )
+            except:
+                pass
+            
+            # Update status di database
+            for payload, trans in transactions.items():
+                if trans.get('charge_id') == charge_id:
+                    trans['status'] = 'refunded'
+                    trans['refunded_at'] = datetime.now().isoformat()
+                    break
+            
+            await event.respond(
+                f"✅ **Refund Berhasil!**\n\n"
+                f"User ID: `{user_id}`\n"
+                f"Charge ID: `{charge_id}`\n\n"
+                f"Stars telah dikembalikan ke user."
+            )
+            
+            # Notifikasi user
+            try:
+                await bot.send_message(
+                    user_id,
+                    f"🔄 **Deposit Dikembalikan (Refund)**\n\n"
+                    f"ID Transaksi: `{charge_id}`\n\n"
+                    f"Stars telah dikembalikan ke akun Anda."
+                )
+            except:
+                pass
+            
+            logger.info(f"Refund processed: {charge_id} for user {user_id}")
+            
+        except Exception as e:
+            await processing_msg.delete()
+            error_msg = str(e)
+            
+            if "CHARGE_NOT_FOUND" in error_msg:
+                feedback = "❌ Charge ID tidak ditemukan atau tidak valid"
+            elif "CHARGE_ALREADY_REFUNDED" in error_msg:
+                feedback = "❌ Transaksi ini sudah direfund sebelumnya"
+            else:
+                feedback = f"❌ Gagal refund: {error_msg}"
+            
+            await event.respond(feedback)
+            logger.error(f"Refund error for {charge_id}: {e}")
+        
+        delattr(event.client, 'refund_data')
+        
+    elif text == 'TIDAK':
+        # Batal refund
+        try:
+            await bot.delete_messages(
+                refund_data['chat_id'],
+                [refund_data['confirm_msg_id']]
+            )
+        except:
+            pass
+        
+        await event.respond("❌ Refund dibatalkan.")
+        delattr(event.client, 'refund_data')
 
 async def main():
-    print("🚀 Memulai bot...")
-    print(f"📌 Website URL: {WEBSITE_URL}")
-    print(f"📌 Owner IDs: {OWNER_ID}")
+    await bot.start(bot_token=BOT_TOKEN)
+    logger.info("="*50)
+    logger.info("DEPOSIT BOT TELEGRAM STARS DIMULAI")
+    logger.info("="*50)
+    logger.info(f"WEBHOOK URL: {WEBHOOK_URL}")
+    logger.info("="*50)
     
-    all_configs = db_bot.load_bot_configs()
-    
-    if not all_configs:
-        print("📌 Tidak ada bot dalam database. Menjalankan bot utama...")
-        main_config = {
-            'api_id': API_ID,
-            'api_hash': API_HASH,
-            'bot_token': BOT_TOKEN,
-            'is_main': True,
-            'username': None,
-            'bot_id': None
-        }
-        await run_bot(main_config)
-    else:
-        print(f"📌 Menjalankan {len(all_configs)} bot...")
-        tasks = [asyncio.create_task(run_bot(config)) for config in all_configs]
-        await asyncio.gather(*tasks)
+    await bot.run_until_disconnected()
 
 if __name__ == '__main__':
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\n🛑 Program dihentikan oleh user.")
-    except Exception as e:
-        print(f"❌ Error fatal: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.info("Bot dimatikan...")
