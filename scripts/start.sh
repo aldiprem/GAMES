@@ -14,7 +14,7 @@ echo -e "${GREEN}============================================${NC}"
 echo -e "${GREEN}🚀 Memulai Website Management + Bot Telegram${NC}"
 echo -e "${GREEN}============================================${NC}"
 
-# Pindah ke direktori utama (satu level di atas scripts)
+# Pindah ke direktori utama
 cd "$(dirname "$0")/.." || exit 1
 PROJECT_DIR=$(pwd)
 
@@ -26,33 +26,31 @@ if ! command -v python3 &> /dev/null; then
     exit 1
 fi
 
-# Cek file .env
-if [ ! -f ".env" ]; then
-    echo -e "${YELLOW}⚠️  File .env tidak ditemukan. Membuat dari .env.example...${NC}"
-    if [ -f ".env.example" ]; then
-        cp .env.example .env
-        echo -e "${GREEN}✅ File .env telah dibuat. Silakan edit dengan konfigurasi Anda.${NC}"
+# Cek virtual environment
+if [ ! -d "myenv" ]; then
+    echo -e "${YELLOW}📦 Membuat virtual environment...${NC}"
+    python3 -m venv myenv
+fi
+
+# Aktivasi virtual environment
+echo -e "${YELLOW}🔌 Mengaktifkan virtual environment...${NC}"
+source myenv/bin/activate
+
+# Cek dan install dependencies
+echo -e "${YELLOW}📦 Memeriksa dependencies...${NC}"
+if [ -f "requirements.txt" ]; then
+    # Hapus baris curl dari requirements.txt jika ada
+    sed -i '/curl/d' requirements.txt
+    
+    pip install --upgrade pip > /dev/null 2>&1
+    pip install -r requirements.txt
+    
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}✅ Dependencies terinstall${NC}"
     else
-        echo -e "${RED}❌ File .env.example tidak ditemukan. Buat file .env manual.${NC}"
+        echo -e "${RED}❌ Gagal install dependencies${NC}"
         exit 1
     fi
-fi
-
-# Cek dan install dependencies jika perlu
-echo -e "${YELLOW}📦 Memeriksa dependencies...${NC}"
-if [ ! -d "venv" ]; then
-    echo -e "${YELLOW}📦 Membuat virtual environment...${NC}"
-    python3 -m venv venv
-fi
-
-# Aktifkan virtual environment
-source venv/bin/activate
-
-# Install requirements
-if [ -f "requirements.txt" ]; then
-    echo -e "${YELLOW}📦 Menginstall dependencies dari requirements.txt...${NC}"
-    pip install -r requirements.txt > /dev/null 2>&1
-    echo -e "${GREEN}✅ Dependencies terinstall${NC}"
 else
     echo -e "${RED}❌ File requirements.txt tidak ditemukan${NC}"
     exit 1
@@ -73,7 +71,7 @@ run_bot() {
 # Trap untuk menangani interrupt
 trap 'echo -e "\n${RED}🛑 Menghentikan semua proses...${NC}"; kill $(jobs -p) 2>/dev/null; exit' INT TERM
 
-# Jalankan kedua proses secara bersamaan
+# Jalankan kedua proses
 echo -e "${GREEN}============================================${NC}"
 echo -e "${GREEN}✅ Semua proses dimulai!${NC}"
 echo -e "${CYAN}📊 Flask App: http://localhost:8000${NC}"
@@ -85,7 +83,7 @@ echo -e "${GREEN}============================================${NC}"
 run_flask &
 FLASK_PID=$!
 
-# Jalankan Bot di foreground (agar output terlihat)
+# Jalankan Bot di foreground
 run_bot
 
 # Tunggu proses selesai
