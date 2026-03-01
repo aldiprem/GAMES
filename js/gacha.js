@@ -41,21 +41,34 @@ async function authenticateUser(telegramUser) {
   showLoading(true);
 
   try {
-    // Ambil initData mentah dari Telegram WebApp
     const initData = tg.initData;
-    console.log('Raw initData:', initData); // Cek di console browser
+    console.log('Raw initData:', initData);
 
-    // Kirim initData langsung sebagai string
+    // Parse initData menjadi object
+    const params = new URLSearchParams(initData);
+    const authData = {};
+    for (const [key, value] of params) {
+      authData[key] = value;
+    }
+
+    // Gabungkan dengan user data (HAPUS DUPLIKASI!)
+    const requestData = {
+      ...authData,
+      // Jangan tambahkan user data terpisah karena sudah ada di authData.user
+    };
+
+    console.log('Sending data:', requestData);
+
     const response = await fetch(`${API_BASE_URL}/api/auth`, {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/x-www-form-urlencoded', // Ubah content type
+        'Content-Type': 'application/json', // Kembali ke JSON
       },
-      body: initData // Kirim string mentah, bukan JSON
+      body: JSON.stringify(requestData)
     });
 
     const responseData = await response.json();
-    console.log('Server response:', responseData);
+    console.log('Response:', responseData);
 
     if (response.ok) {
       currentUser = responseData;
