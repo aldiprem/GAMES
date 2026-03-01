@@ -1,4 +1,5 @@
 import os
+import sys
 import asyncio
 import logging
 import random
@@ -10,11 +11,18 @@ from telethon import TelegramClient, events, Button
 from telethon.tl import types, functions
 import pytz
 
+# Tambahkan path ke direktori saat ini
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
 # Load environment variables
 load_dotenv()
 
 # Database imports
-from py.gacha import SessionLocal, User, Transaction
+try:
+    from py.gacha import SessionLocal, User, Transaction, get_wib_time, engine, Base
+except ImportError:
+    # Fallback jika struktur folder berbeda
+    from gacha import SessionLocal, User, Transaction, get_wib_time, engine, Base
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -36,17 +44,19 @@ def get_wib_time():
 async def start(event):
     # Simpan user ke database jika belum ada
     db = SessionLocal()
-    user = db.query(User).filter(User.telegram_id == event.sender_id).first()
-    if not user:
-        user = User(
-            telegram_id=event.sender_id,
-            username=event.sender.username,
-            first_name=event.sender.first_name,
-            last_name=event.sender.last_name
-        )
-        db.add(user)
-        db.commit()
-    db.close()
+    try:
+        user = db.query(User).filter(User.telegram_id == event.sender_id).first()
+        if not user:
+            user = User(
+                telegram_id=event.sender_id,
+                username=event.sender.username,
+                first_name=event.sender.first_name,
+                last_name=event.sender.last_name
+            )
+            db.add(user)
+            db.commit()
+    finally:
+        db.close()
     
     await event.respond(
         "💰 **Selamat Datang di Deposit Bot** 💰\n\n"
@@ -79,31 +89,32 @@ async def deposit_handler(event):
         
         # Simpan ke database
         db = SessionLocal()
-        
-        # Dapatkan user
-        user = db.query(User).filter(User.telegram_id == user_id).first()
-        if not user:
-            user = User(
-                telegram_id=user_id,
-                username=event.sender.username,
-                first_name=event.sender.first_name,
-                last_name=event.sender.last_name
+        try:
+            # Dapatkan user
+            user = db.query(User).filter(User.telegram_id == user_id).first()
+            if not user:
+                user = User(
+                    telegram_id=user_id,
+                    username=event.sender.username,
+                    first_name=event.sender.first_name,
+                    last_name=event.sender.last_name
+                )
+                db.add(user)
+                db.commit()
+                db.refresh(user)
+            
+            # Buat transaksi
+            transaction = Transaction(
+                user_id=user.id,
+                amount=amount,
+                payload=payload,
+                status='pending',
+                created_at=get_wib_time()
             )
-            db.add(user)
+            db.add(transaction)
             db.commit()
-            db.refresh(user)
-        
-        # Buat transaksi
-        transaction = Transaction(
-            user_id=user.id,
-            amount=amount,
-            payload=payload,
-            status='pending',
-            created_at=get_wib_time()
-        )
-        db.add(transaction)
-        db.commit()
-        db.close()
+        finally:
+            db.close()
         
         # Panggil Bot API untuk createInvoiceLink
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/createInvoiceLink"
@@ -163,7 +174,10 @@ async def raw_handler(event):
                 ))
                 return
             
-            if transaction.user.telegram_id != user_id:
+            # Load user relationship
+            user = db.query(User).filter(User.id == transaction.user_id).first()
+            
+            if user.telegram_id != user_id:
                 await bot(functions.messages.SetBotPrecheckoutResultsRequest(
                     query_id=query_id,
                     success=False,
@@ -189,6 +203,14 @@ async def raw_handler(event):
             
         except Exception as e:
             logger.error(f"Error in pre_checkout: {e}")
+            try:
+                await bot(functions.messages.SetBotPrecheckoutResultsRequest(
+                    query_id=query_id,
+                    success=False,
+                    error="Terjadi kesalahan sistem"
+                ))
+            except:
+                pass
         finally:
             db.close()
     
@@ -210,36 +232,37 @@ async def raw_handler(event):
                 logger.info(f"PAYMENT SUCCESS! User {user_id}, Charge ID {charge_id}")
                 
                 db = SessionLocal()
-                
-                # Cari transaksi
-                transaction = db.query(Transaction).filter(Transaction.payload == payload).first()
-                
-                if transaction and transaction.status == 'pending':
-                    # Update transaksi
-                    transaction.status = 'completed'
-                    transaction.charge_id = charge_id
-                    transaction.completed_at = get_wib_time()
+                try:
+                    # Cari transaksi
+                    transaction = db.query(Transaction).filter(Transaction.payload == payload).first()
                     
-                    # Update saldo user
-                    user = transaction.user
-                    user.balance += total_amount
-                    
-                    db.commit()
-                    
-                    # Kirim konfirmasi
-                    waktu = get_wib_time().strftime('%d/%m/%Y %H:%M:%S')
-                    await bot.send_message(
-                        user_id,
-                        f"✅ **DEPOSIT BERHASIL!**\n\n"
-                        f"💰 **Jumlah:** {total_amount} ⭐\n"
-                        f"🆔 **Transaksi:** `{charge_id}`\n"
-                        f"📅 **Waktu:** {waktu}\n\n"
-                        f"Terima kasih telah melakukan deposit! 🎉"
-                    )
-                    
-                    logger.info(f"Deposit completed for user {user_id}")
-                
-                db.close()
+                    if transaction and transaction.status == 'pending':
+                        # Update transaksi
+                        transaction.status = 'completed'
+                        transaction.charge_id = charge_id
+                        transaction.completed_at = get_wib_time()
+                        
+                        # Update saldo user
+                        user = db.query(User).filter(User.id == transaction.user_id).first()
+                        if user:
+                            user.balance += total_amount
+                        
+                        db.commit()
+                        
+                        # Kirim konfirmasi
+                        waktu = get_wib_time().strftime('%d/%m/%Y %H:%M:%S')
+                        await bot.send_message(
+                            user_id,
+                            f"✅ **DEPOSIT BERHASIL!**\n\n"
+                            f"💰 **Jumlah:** {total_amount} ⭐\n"
+                            f"🆔 **Transaksi:** `{charge_id}`\n"
+                            f"📅 **Waktu:** {waktu}\n\n"
+                            f"Terima kasih telah melakukan deposit! 🎉"
+                        )
+                        
+                        logger.info(f"Deposit completed for user {user_id}")
+                finally:
+                    db.close()
                 
             except Exception as e:
                 logger.error(f"Error processing payment: {e}")
@@ -271,13 +294,13 @@ async def stats_handler(event):
         return
     
     db = SessionLocal()
-    
-    total_users = db.query(User).count()
-    total_transactions = db.query(Transaction).filter(Transaction.status == 'completed').count()
-    total_stars = db.query(Transaction).filter(Transaction.status == 'completed').with_entities(db.func.sum(Transaction.amount)).scalar() or 0
-    pending = db.query(Transaction).filter(Transaction.status == 'pending').count()
-    
-    db.close()
+    try:
+        total_users = db.query(User).count()
+        total_transactions = db.query(Transaction).filter(Transaction.status == 'completed').count()
+        total_stars = db.query(Transaction).filter(Transaction.status == 'completed').with_entities(db.func.sum(Transaction.amount)).scalar() or 0
+        pending = db.query(Transaction).filter(Transaction.status == 'pending').count()
+    finally:
+        db.close()
     
     await event.respond(
         f"📊 **STATISTIK**\n\n"
@@ -373,11 +396,15 @@ async def handle_refund_confirmation(event):
                 pass
             
             # Update status di database
-            for payload, trans in transactions.items():
-                if trans.get('charge_id') == charge_id:
-                    trans['status'] = 'refunded'
-                    trans['refunded_at'] = datetime.now().isoformat()
-                    break
+            db = SessionLocal()
+            try:
+                transaction = db.query(Transaction).filter(Transaction.charge_id == charge_id).first()
+                if transaction:
+                    transaction.status = 'refunded'
+                    transaction.refunded_at = get_wib_time()
+                    db.commit()
+            finally:
+                db.close()
             
             await event.respond(
                 f"✅ **Refund Berhasil!**\n\n"
