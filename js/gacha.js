@@ -37,31 +37,53 @@ document.querySelectorAll('.quick-amount').forEach(btn => {
   });
 });
 
-// Fungsi autentikasi user
+// Fungsi autentikasi user - PERBAIKI INI
 async function authenticateUser(telegramUser) {
   showLoading(true);
 
   try {
+    // Dapatkan initData dari Telegram WebApp
+    const initData = tg.initData;
+    console.log('Init data:', initData); // Cek di console browser
+
+    // Parse initData menjadi object
+    const params = new URLSearchParams(initData);
+    const authData = {};
+    for (const [key, value] of params) {
+      authData[key] = value;
+    }
+
+    // Gabungkan dengan user data
+    const requestData = {
+      ...authData,
+      ...telegramUser
+    };
+
+    console.log('Sending to server:', requestData); // Cek di console browser
+
     const response = await fetch(`${API_BASE_URL}/api/auth`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify(telegramUser)
+      body: JSON.stringify(requestData) // Kirim data LENGKAP dengan hash
     });
 
+    const responseData = await response.json();
+    console.log('Server response:', responseData); // Cek di console browser
+
     if (response.ok) {
-      currentUser = await response.json();
+      currentUser = responseData;
       updateUserInfo();
       document.getElementById('mainContent').style.display = 'block';
       document.getElementById('historySection').style.display = 'block';
       loadTransactionHistory();
     } else {
-      showError('Gagal autentikasi');
+      showError('Gagal autentikasi: ' + (responseData.error || 'Unknown error'));
     }
   } catch (error) {
-    showError('Koneksi error');
-    console.error(error);
+    showError('Koneksi error: ' + error.message);
+    console.error('Auth error:', error);
   } finally {
     showLoading(false);
   }
