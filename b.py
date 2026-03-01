@@ -258,31 +258,40 @@ async def run_bot(config):
                 logger.error(f"Error handling deposit payload: {e}")
                 await event.respond("❌ Terjadi kesalahan.")
 
+        # ============ FUNGSI SEND INVOICE YANG DIPERBAIKI ============
         async def send_stars_invoice(event, amount, payload):
             """Kirim invoice Stars ke user (seperti di pay.py)"""
             try:
                 logger.info(f"Sending invoice for {amount} stars with payload: {payload}")
                 
+                # Pastikan amount adalah integer
+                amount = int(amount)
+                
+                # Buat invoice dengan parameter yang benar
                 invoice = types.Invoice(
-                    currency="XTR",  # Telegram Stars
-                    prices=[types.LabeledPrice(
-                        label=f"Deposit {amount} Stars",
-                        amount=amount
-                    )]
+                    currency="XTR",
+                    prices=[
+                        types.LabeledPrice(
+                            label=f"Deposit {amount} Stars",
+                            amount=amount
+                        )
+                    ]
                 )
                 
+                # Buat media invoice dengan semua parameter yang diperlukan
                 media = types.InputMediaInvoice(
                     title="💰 Deposit Stars",
                     description=f"Deposit {amount} ⭐ ke saldo Gacha Username",
-                    photo=None,
+                    photo=None,  # Bisa None
                     invoice=invoice,
-                    payload=payload.encode(),
-                    provider=None,
-                    provider_data=types.DataJSON(data='{}'),
+                    payload=payload.encode('utf-8'),  # Pastikan encode ke bytes
+                    provider=None,  # Bisa None untuk Stars
+                    provider_data=types.DataJSON(data='{}'),  # DataJSON kosong
                     start_param="deposit"
                 )
                 
-                await event.client(functions.messages.SendMediaRequest(
+                # Kirim pesan dengan media
+                result = await event.client(functions.messages.SendMediaRequest(
                     peer=await event.client.get_input_entity(event.chat_id),
                     media=media,
                     message=f"🧾 **INVOICE DEPOSIT**\n\n"
@@ -295,6 +304,8 @@ async def run_bot(config):
                 
             except Exception as e:
                 logger.error(f"Error sending invoice: {e}")
+                import traceback
+                traceback.print_exc()
                 await event.respond(f"❌ Gagal mengirim invoice: {str(e)}")
 
         # ============ HANDLER UNTUK RAW PAYMENT (PRE-CHECKOUT & SUCCESS) ============
@@ -545,14 +556,7 @@ async def run_bot(config):
                 
             except Exception as e:
                 logger.error(f"Error in balance_handler: {e}")
-                
-                # Coba method alternatif
-                try:
-                    result = await client(functions.payments.GetStarsBalanceRequest())
-                    balance = result.balance
-                    await event.respond(f"💰 **SALDO BOT STARS:** {balance} ⭐")
-                except:
-                    await event.respond(f"❌ Gagal mendapatkan saldo: {str(e)}")
+                await event.respond(f"❌ Gagal mendapatkan saldo: {str(e)}")
 
         # ============ HANDLER LAINNYA ============
         @client.on(events.NewMessage(pattern='/help'))
