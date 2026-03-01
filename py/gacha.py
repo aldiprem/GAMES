@@ -59,6 +59,10 @@ CORS(app)  # Enable CORS for all routes
 
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 
+def clean_json_string(json_str):
+    """Hapus backslash escape yang gak perlu dari JSON string"""
+    return json_str.replace('\\/', '/')
+
 def verify_telegram_auth(auth_data):
     """Verifikasi data auth dari Telegram Login Widget"""
     if not auth_data:
@@ -73,21 +77,31 @@ def verify_telegram_auth(auth_data):
         print("No hash in auth data")
         return None
     
-    # 🔥 YANG BENER: Urutin pake aturan TELEGRAM (Unicode order)
+    # Parse user field jika ada
+    if 'user' in data:
+        try:
+            # Parse user string menjadi object
+            user_obj = json.loads(data['user'])
+            # Stringify ulang tanpa spasi dan format standar
+            data['user'] = json.dumps(user_obj, separators=(',', ':'))
+        except Exception as e:
+            print(f"Error parsing user: {e}")
+            return None
+    
+    # Urutkan key secara alfabetis
     data_check_arr = []
-    for key in sorted(data.keys()):  # sorted() itu udah pake Unicode order
+    for key in sorted(data.keys()):
         value = data[key]
-        # JANGAN diubah apapun!
         data_check_arr.append(f"{key}={value}")
     
     data_check_string = "\n".join(data_check_arr)
     
     print(f"Data string for verification:\n{data_check_string}")
     
-    # Buat secret key
+    # Buat secret key dari bot token (gunakan SHA256)
     secret_key = hashlib.sha256(BOT_TOKEN.encode()).digest()
     
-    # Hitung hash
+    # Hitung hash menggunakan HMAC-SHA256
     calculated_hash = hmac.new(
         secret_key,
         data_check_string.encode(),
@@ -97,10 +111,25 @@ def verify_telegram_auth(auth_data):
     print(f"Expected: {check_hash}")
     print(f"Got: {calculated_hash}")
     
-    if calculated_hash != check_hash:
+    # Bandingkan hash (gunakan compare_digest untuk keamanan)
+    if not hmac.compare_digest(calculated_hash, check_hash):
         return None
     
+    # Parse user data untuk response
+    if 'user' in data:
+        try:
+            data['user'] = json.loads(data['user'])
+        except:
+            pass
+    
     return data
+
+@app.after_request
+def after_request(response):
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
+    return response
 
 # Tambahkan route ini setelah CORS setup
 @app.route('/', methods=['GET'])
@@ -118,62 +147,78 @@ def test():
 
 @app.route('/api/auth', methods=['POST', 'OPTIONS'])
 def auth():
-    """Endpoint untuk verifikasi login Telegram"""
     if request.method == 'OPTIONS':
-        return '', 200
+        response = jsonify({'status': 'ok'})
+        response.headers.add('Access-Control-Allow-Origin', '*')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
+        response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        return response, 200
     
-    # Ambil data JSON
     auth_data = request.json
     print(f"Received auth data: {auth_data}")
     
-    if not auth_data:
-        return jsonify({'error': 'No data received'}), 400
-    
-    # Verifikasi dengan fungsi yang sudah ada
+    # Verifikasi data
     verified_data = verify_telegram_auth(auth_data)
-    
     if not verified_data:
-        return jsonify({'error': 'Invalid auth data'}), 401
+        return jsonify({'error': 'Invalid authentication data'}), 401
     
-    # Parse user dari string JSON di field 'user'
-    import json
     try:
-        user_data = json.loads(verified_data['user'])
-        telegram_id = user_data['id']
+        # Ambil user data dari verified_data
+        user_data = verified_data.get('user', {})
+        if isinstance(user_data, str):
+            user_data = json.loads(user_data)
+        
+        telegram_id = user_data.get('id')
+        if not telegram_id:
+            return jsonify({'error': 'User ID not found'}), 400
+            
         first_name = user_data.get('first_name', '')
         last_name = user_data.get('last_name', '')
         username = user_data.get('username', '')
-    except:
-        # Fallback ke field terpisah
-        telegram_id = int(verified_data.get('id', 0))
-        first_name = verified_data.get('first_name', '')
-        last_name = verified_data.get('last_name', '')
-        username = verified_data.get('username', '')
+        
+        print(f"✅ User authenticated: {telegram_id} - {username}")
+        
+    except Exception as e:
+        print(f"Error parsing user data: {e}")
+        return jsonify({'error': 'Invalid user data'}), 400
     
-    # Simpan atau update user di database
+    # Simpan/update user ke database
     db = SessionLocal()
-    user = db.query(User).filter(User.telegram_id == telegram_id).first()
-    
-    if not user:
-        user = User(
-            telegram_id=telegram_id,
-            username=username,
-            first_name=first_name,
-            last_name=last_name
-        )
-        db.add(user)
+    try:
+        user = db.query(User).filter(User.telegram_id == telegram_id).first()
+        
+        if not user:
+            user = User(
+                telegram_id=telegram_id,
+                username=username,
+                first_name=first_name,
+                last_name=last_name,
+                balance=0
+            )
+            db.add(user)
+        else:
+            # Update data user jika perlu
+            user.username = username
+            user.first_name = first_name
+            user.last_name = last_name
+        
         db.commit()
         db.refresh(user)
-    
-    db.close()
-    
-    return jsonify({
-        'id': user.telegram_id,
-        'username': user.username,
-        'first_name': user.first_name,
-        'last_name': user.last_name,
-        'balance': user.balance
-    })
+        
+        return jsonify({
+            'id': user.telegram_id,
+            'username': user.username,
+            'first_name': user.first_name,
+            'last_name': user.last_name,
+            'balance': user.balance
+        })
+        
+    except Exception as e:
+        db.rollback()
+        print(f"Database error: {e}")
+        return jsonify({'error': 'Database error'}), 500
+    finally:
+        db.close()
 
 @app.route('/api/user/<int:telegram_id>', methods=['GET'])
 def get_user(telegram_id):
