@@ -6,11 +6,13 @@ let paymentCheckInterval = null;
 
 // Initialize on load
 document.addEventListener('DOMContentLoaded', function() {
+    console.log('Gacha.js initialized');
     const demoUserId = 7998861975;
     
     loadUserData(demoUserId);
     loadPage('games');
     
+    // Setup navigation
     document.querySelectorAll('.nav-btn').forEach(btn => {
         btn.addEventListener('click', function() {
             const page = this.dataset.page;
@@ -18,6 +20,7 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     });
     
+    // Setup quick amount buttons
     document.querySelectorAll('.amount-btn').forEach(btn => {
         btn.addEventListener('click', function() {
             const amount = this.dataset.amount;
@@ -29,11 +32,13 @@ document.addEventListener('DOMContentLoaded', function() {
 // Load user data
 async function loadUserData(userId) {
     try {
+        console.log(`Loading user data for ID: ${userId}`);
         const response = await fetch(`/gacha/api/user/${userId}`);
         const data = await response.json();
         
         if (data.success) {
             currentUser = data.user;
+            console.log('User data loaded:', currentUser);
             updateUI();
         } else {
             console.error('Failed to load user:', data.message);
@@ -56,6 +61,7 @@ function updateUI() {
 // Load page
 function loadPage(page) {
     currentPage = page;
+    console.log(`Loading page: ${page}`);
     
     document.querySelectorAll('.nav-btn').forEach(btn => {
         btn.classList.remove('active');
@@ -218,8 +224,10 @@ async function initDeposit() {
     }
     
     closeDepositModal();
+    showLoading(true);
     
     try {
+        console.log('Initiating deposit:', amount);
         const response = await fetch('/gacha/api/deposit/init', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -230,6 +238,7 @@ async function initDeposit() {
         });
         
         const data = await response.json();
+        console.log('Deposit response:', data);
         
         if (data.success) {
             currentPaymentData = data;
@@ -238,8 +247,10 @@ async function initDeposit() {
             showError('Gagal memproses deposit: ' + data.message);
         }
     } catch (error) {
-        console.error('Error:', error);
+        console.error('Error in initDeposit:', error);
         showError('Gagal terhubung ke server');
+    } finally {
+        showLoading(false);
     }
 }
 
@@ -311,10 +322,12 @@ function startPaymentCheck(payload) {
     
     paymentCheckInterval = setInterval(async () => {
         try {
+            console.log('Checking payment status for:', payload);
             const response = await fetch(`/gacha/api/deposit/check/${payload}`);
             const data = await response.json();
             
             if (data.success && data.status === 'completed') {
+                console.log('Payment completed!');
                 clearInterval(paymentCheckInterval);
                 paymentCheckInterval = null;
                 
@@ -371,7 +384,7 @@ async function getRandomUsername() {
             document.getElementById('spinButton').dataset.price = data.price;
         }
     } catch (error) {
-        console.error('Error:', error);
+        console.error('Error getting random username:', error);
     }
 }
 
@@ -391,6 +404,7 @@ async function spinGacha() {
     }
     
     try {
+        console.log('Purchasing gacha:', {username, price});
         const response = await fetch('/gacha/api/gacha/purchase', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -413,7 +427,7 @@ async function spinGacha() {
             showGachaResult(data.message, 'error');
         }
     } catch (error) {
-        console.error('Error:', error);
+        console.error('Error purchasing gacha:', error);
         showGachaResult('Terjadi kesalahan', 'error');
     }
 }
@@ -427,6 +441,11 @@ function showGachaResult(message, type) {
 }
 
 // ============ UTILITY FUNCTIONS ============
+function showLoading(show) {
+    // Implement loading indicator if needed
+    console.log('Loading:', show);
+}
+
 function showSuccess(message) {
     document.getElementById('successMessage').textContent = message;
     document.getElementById('successModal').classList.add('show');
@@ -453,3 +472,15 @@ async function refreshBalance() {
         showSuccess('Saldo diperbarui!');
     }
 }
+
+// Export functions to global scope
+window.openDepositModal = openDepositModal;
+window.closeDepositModal = closeDepositModal;
+window.initDeposit = initDeposit;
+window.closePaymentModal = closePaymentModal;
+window.openGachaModal = openGachaModal;
+window.closeGachaModal = closeGachaModal;
+window.spinGacha = spinGacha;
+window.closeSuccessModal = closeSuccessModal;
+window.closeErrorModal = closeErrorModal;
+window.refreshBalance = refreshBalance;
