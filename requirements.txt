@@ -1,7 +1,0 @@
-Flask
-flask-cors
-python-dotenv
-telethon
-requests
-beautifulsoup4
-aiohttp
