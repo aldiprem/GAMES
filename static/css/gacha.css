@@ -681,6 +681,24 @@ body {
     color: #333;
 }
 
+/* Loading */
+.loading {
+    text-align: center;
+    padding: 50px;
+    color: #666;
+}
+
+.loading:after {
+    content: "...";
+    animation: dots 1.5s steps(5, end) infinite;
+}
+
+@keyframes dots {
+    0%, 20% { content: "."; }
+    40% { content: ".."; }
+    60%, 100% { content: "..."; }
+}
+
 /* Responsive */
 @media (max-width: 480px) {
     .modal-content {
