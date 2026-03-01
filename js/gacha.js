@@ -51,20 +51,17 @@ async function authenticateUser(telegramUser) {
       authData[key] = value;
     }
 
-    // Gabungkan dengan user data (HAPUS DUPLIKASI!)
-    const requestData = {
-      ...authData,
-      // Jangan tambahkan user data terpisah karena sudah ada di authData.user
-    };
+    // HAPUS FIELD USER DARI TELEGRAMUSER! 
+    // Jangan tambahin field terpisah karena udah ada di authData.user
 
-    console.log('Sending data:', requestData);
+    console.log('Sending data to server:', authData); // <-- PASTIKAN TIDAK ADA DUPLIKAT
 
     const response = await fetch(`${API_BASE_URL}/api/auth`, {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json', // Kembali ke JSON
+        'Content-Type': 'application/json',
       },
-      body: JSON.stringify(requestData)
+      body: JSON.stringify(authData) // <-- KIRIM CUMA authData aja!
     });
 
     const responseData = await response.json();
