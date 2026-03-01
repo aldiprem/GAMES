@@ -1,15 +1,14 @@
 import sqlite3
 import os
 from datetime import datetime
+import config
 
-DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'database', 'users.db')
+DB_PATH = config.USERS_DB
 
 def init_database():
-    """Inisialisasi database users"""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
-    # Tabel users
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -26,7 +25,6 @@ def init_database():
         )
     ''')
     
-    # Tabel transaksi
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS transactions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -39,7 +37,6 @@ def init_database():
         )
     ''')
     
-    # Tambah owner default jika belum ada
     cursor.execute("SELECT * FROM users WHERE user_id = ?", (7998861975,))
     if not cursor.fetchone():
         cursor.execute('''
@@ -51,7 +48,6 @@ def init_database():
     conn.close()
 
 def get_user(user_id):
-    """Ambil data user berdasarkan user_id"""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
@@ -61,7 +57,6 @@ def get_user(user_id):
     return dict(user) if user else None
 
 def get_all_users():
-    """Ambil semua user"""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
@@ -71,7 +66,6 @@ def get_all_users():
     return users
 
 def add_user(user_id, username=None, full_name=None):
-    """Tambah user baru"""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     try:
@@ -88,18 +82,15 @@ def add_user(user_id, username=None, full_name=None):
         conn.close()
 
 def update_balance(user_id, amount, transaction_type, description=""):
-    """Update saldo user dan catat transaksi"""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     try:
-        # Update balance
         cursor.execute('''
             UPDATE users 
             SET balance = balance + ?, last_active = CURRENT_TIMESTAMP
             WHERE user_id = ?
         ''', (amount, user_id))
         
-        # Catat transaksi
         cursor.execute('''
             INSERT INTO transactions (user_id, amount, type, description)
             VALUES (?, ?, ?, ?)
@@ -114,7 +105,6 @@ def update_balance(user_id, amount, transaction_type, description=""):
         conn.close()
 
 def reset_balance(user_id):
-    """Reset saldo user ke 0"""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     try:
@@ -128,7 +118,6 @@ def reset_balance(user_id):
         conn.close()
 
 def delete_user(user_id):
-    """Hapus user"""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     try:
@@ -143,7 +132,6 @@ def delete_user(user_id):
         conn.close()
 
 def get_transactions(user_id=None, limit=50):
-    """Ambil riwayat transaksi"""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
