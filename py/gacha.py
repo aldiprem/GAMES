@@ -109,10 +109,20 @@ def test():
     """Endpoint test untuk cek koneksi"""
     return jsonify({'status': 'ok', 'message': 'API is working'})
 
-@app.route('/api/auth', methods=['POST'])
+@app.route('/api/auth', methods=['POST', 'OPTIONS'])
 def auth():
     """Endpoint untuk verifikasi login Telegram"""
+    if request.method == 'OPTIONS':
+        return '', 200
+        
     data = request.json
+    print(f"Received auth data: {data}")  # DEBUG
+    
+    # Cek apakah ada hash
+    if 'hash' not in data:
+        print("No hash in request data!")
+        return jsonify({'error': 'No hash provided'}), 401
+    
     auth_data = verify_telegram_auth(data.copy())
     
     if not auth_data:
