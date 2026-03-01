@@ -64,7 +64,7 @@ def verify_telegram_auth(auth_data):
     if not auth_data:
         return None
     
-    # Buat copy agar tidak mengubah data asli
+    # Buat copy
     data = auth_data.copy()
     
     # Cek hash
@@ -73,16 +73,16 @@ def verify_telegram_auth(auth_data):
         print("No hash in auth data")
         return None
     
-    # Buat string untuk verifikasi dengan urutan KEY ALFABETIS
+    # Buat string untuk verifikasi - HANYA gunakan key yang ada di data!
     data_check_arr = []
-    for key in sorted(data.keys()):  # PENTING: Harus sorted!
+    for key in sorted(data.keys()):  # Urutkan alfabetis
         value = data[key]
         data_check_arr.append(f"{key}={value}")
     data_check_string = "\n".join(data_check_arr)
     
-    print(f"Data string for verification (sorted): {data_check_string}")
+    print(f"Data string for verification: {data_check_string}")
     
-    # Buat secret key dari bot token
+    # Buat secret key
     secret_key = hashlib.sha256(BOT_TOKEN.encode()).digest()
     
     # Hitung hash
@@ -98,7 +98,6 @@ def verify_telegram_auth(auth_data):
     if calculated_hash != check_hash:
         return None
     
-    print(f"✅ Auth success for user {data.get('id')}")
     return data
 
 # Tambahkan route ini setelah CORS setup
@@ -121,16 +120,12 @@ def auth():
     if request.method == 'OPTIONS':
         return '', 200
     
-    # Ambil data dari form-urlencoded
-    data_string = request.get_data(as_text=True)
-    print(f"Raw data string: {data_string}")
+    # Ambil data JSON
+    auth_data = request.json
+    print(f"Received auth data: {auth_data}")
     
-    # Parse query string
-    parsed_data = parse_qs(data_string)
-    # Ambil nilai pertama dari setiap key (karena parse_qs mengembalikan list)
-    auth_data = {k: v[0] for k, v in parsed_data.items()}
-    
-    print(f"Parsed auth data: {auth_data}")
+    if not auth_data:
+        return jsonify({'error': 'No data received'}), 400
     
     # Verifikasi dengan fungsi yang sudah ada
     verified_data = verify_telegram_auth(auth_data)
@@ -138,16 +133,31 @@ def auth():
     if not verified_data:
         return jsonify({'error': 'Invalid auth data'}), 401
     
+    # Parse user dari string JSON di field 'user'
+    import json
+    try:
+        user_data = json.loads(verified_data['user'])
+        telegram_id = user_data['id']
+        first_name = user_data.get('first_name', '')
+        last_name = user_data.get('last_name', '')
+        username = user_data.get('username', '')
+    except:
+        # Fallback ke field terpisah
+        telegram_id = int(verified_data.get('id', 0))
+        first_name = verified_data.get('first_name', '')
+        last_name = verified_data.get('last_name', '')
+        username = verified_data.get('username', '')
+    
     # Simpan atau update user di database
     db = SessionLocal()
-    user = db.query(User).filter(User.telegram_id == int(verified_data['id'])).first()
+    user = db.query(User).filter(User.telegram_id == telegram_id).first()
     
     if not user:
         user = User(
-            telegram_id=int(verified_data['id']),
-            username=verified_data.get('username'),
-            first_name=verified_data.get('first_name'),
-            last_name=verified_data.get('last_name')
+            telegram_id=telegram_id,
+            username=username,
+            first_name=first_name,
+            last_name=last_name
         )
         db.add(user)
         db.commit()
