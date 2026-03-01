@@ -234,6 +234,32 @@ function startPaymentCheck(payload) {
   }, 3000); // Cek setiap 3 detik
 }
 
+async function fetchWithCORS(url, options = {}) {
+  const defaultOptions = {
+    mode: 'cors',
+    credentials: 'omit',
+    headers: {
+      'Content-Type': 'application/json',
+    }
+  };
+
+  const fetchOptions = { ...defaultOptions, ...options };
+
+  try {
+    const response = await fetch(url, fetchOptions);
+    return response;
+  } catch (error) {
+    console.error('Fetch error:', error);
+    throw error;
+  }
+}
+
+// Gunakan di semua fetch
+const response = await fetchWithCORS(`${API_BASE_URL}/api/auth`, {
+  method: 'POST',
+  body: JSON.stringify(authData)
+});
+
 // Load riwayat transaksi
 async function loadTransactionHistory() {
   if (!currentUser) return;
