@@ -95,6 +95,20 @@ def verify_telegram_auth(auth_data):
     
     return data
 
+# Tambahkan route ini setelah CORS setup
+@app.route('/', methods=['GET'])
+def home():
+    return jsonify({
+        'status': 'online',
+        'message': 'Gacha API is running',
+        'endpoints': ['/api/auth', '/api/user/<id>', '/api/create-deposit', '/api/check-transaction']
+    })
+
+@app.route('/api/test', methods=['GET'])
+def test():
+    """Endpoint test untuk cek koneksi"""
+    return jsonify({'status': 'ok', 'message': 'API is working'})
+
 @app.route('/api/auth', methods=['POST'])
 def auth():
     """Endpoint untuk verifikasi login Telegram"""
