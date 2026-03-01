@@ -1,292 +1,311 @@
-// Konfigurasi
-const API_BASE_URL = 'https://logs-meets-charlie-wheels.trycloudflare.com';
-let currentUser = null;
-let currentPayload = null;
-let paymentCheckInterval = null;
+import os
+from datetime import datetime
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey, BigInteger
+from sqlalchemy.orm import declarative_base
+from sqlalchemy.orm import sessionmaker, relationship
+from dotenv import load_dotenv
+import pytz
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+from urllib.parse import parse_qs
+import hmac
+import hashlib
 
-// Inisialisasi Telegram Web App
-const tg = window.Telegram.WebApp;
-tg.expand();
+load_dotenv()
 
-// Cek apakah user sudah login via Telegram
-if (tg.initDataUnsafe && tg.initDataUnsafe.user) {
-  const user = tg.initDataUnsafe.user;
-  authenticateUser(user);
-} else {
-  document.getElementById('loginBtn').style.display = 'block';
-}
+# Timezone Indonesia
+WIB = pytz.timezone('Asia/Jakarta')
 
-// Event Listeners
-document.getElementById('loginBtn').addEventListener('click', () => {
-  tg.openTelegramLink('https://t.me/YourBotUsername'); // Ganti dengan username bot Anda
-});
+# Database setup
+DATABASE_URL = os.getenv('DATABASE_URL', 'sqlite:///deposits.db')
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(bind=engine)
+Base = declarative_base()
 
-document.getElementById('continueBtn').addEventListener('click', showInvoicePreview);
+# Models
+class User(Base):
+    __tablename__ = 'users'
+    
+    id = Column(Integer, primary_key=True)
+    telegram_id = Column(BigInteger, unique=True, nullable=False)
+    username = Column(String)
+    first_name = Column(String)
+    last_name = Column(String)
+    balance = Column(Integer, default=0)
+    created_at = Column(DateTime, default=lambda: datetime.now(WIB))
+    
+    transactions = relationship('Transaction', back_populates='user')
 
-document.getElementById('payBtn').addEventListener('click', processPayment);
+class Transaction(Base):
+    __tablename__ = 'transactions'
+    
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'))
+    amount = Column(Integer, nullable=False)
+    payload = Column(String, unique=True)
+    charge_id = Column(String, unique=True)
+    status = Column(String, default='pending')  # pending, completed, refunded
+    created_at = Column(DateTime, default=lambda: datetime.now(WIB))
+    completed_at = Column(DateTime)
+    
+    user = relationship('User', back_populates='transactions')
 
-document.getElementById('backBtn').addEventListener('click', () => {
-  document.getElementById('invoicePreview').style.display = 'none';
-  document.getElementById('mainContent').style.display = 'block';
-});
+# Create tables
+Base.metadata.create_all(bind=engine)
 
-// Quick amount buttons
-document.querySelectorAll('.quick-amount').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.getElementById('amountInput').value = btn.dataset.amount;
-  });
-});
+# Flask app
+app = Flask(__name__)
+CORS(app)  # Enable CORS for all routes
 
-async function authenticateUser(telegramUser) {
-  showLoading(true);
+BOT_TOKEN = os.getenv('BOT_TOKEN')
 
-  try {
-    const initData = tg.initData;
-    console.log('Raw initData:', initData);
+def clean_json_string(json_str):
+    """Hapus backslash escape yang gak perlu dari JSON string"""
+    return json_str.replace('\\/', '/')
 
-    // Parse initData menjadi object
-    const params = new URLSearchParams(initData);
-    const authData = {};
-    for (const [key, value] of params) {
-      authData[key] = value;
+def verify_telegram_auth(auth_data):
+    """Verifikasi data auth dari Telegram Login Widget"""
+    if not auth_data:
+        return None
+    
+    # Buat copy
+    data = auth_data.copy()
+    
+    # 🔥 BERSIHIN DULU FIELD USER DARI BACKSLASH!
+    if 'user' in data:
+        data['user'] = clean_json_string(data['user'])
+    
+    # Ambil hash
+    check_hash = data.pop('hash', None)
+    if not check_hash:
+        print("No hash in auth data")
+        return None
+    
+    # Urutin key
+    data_check_arr = []
+    for key in sorted(data.keys()):
+        value = data[key]
+        data_check_arr.append(f"{key}={value}")
+    
+    data_check_string = "\n".join(data_check_arr)
+    
+    print(f"Data string for verification (cleaned):\n{data_check_string}")
+    
+    # Buat secret key
+    secret_key = hashlib.sha256(BOT_TOKEN.encode()).digest()
+    
+    # Hitung hash
+    calculated_hash = hmac.new(
+        secret_key,
+        data_check_string.encode(),
+        hashlib.sha256
+    ).hexdigest()
+    
+    print(f"Expected: {check_hash}")
+    print(f"Got: {calculated_hash}")
+    
+    if calculated_hash != check_hash:
+        return None
+    
+    return data
+
+# Tambahkan route ini setelah CORS setup
+@app.route('/', methods=['GET'])
+def home():
+    return jsonify({
+        'status': 'online',
+        'message': 'Gacha API is running',
+        'endpoints': ['/api/auth', '/api/user/<id>', '/api/create-deposit', '/api/check-transaction']
+    })
+
+@app.route('/api/test', methods=['GET'])
+def test():
+    """Endpoint test untuk cek koneksi"""
+    return jsonify({'status': 'ok', 'message': 'API is working'})
+
+@app.route('/api/auth', methods=['POST', 'OPTIONS'])
+def auth():
+    if request.method == 'OPTIONS':
+        return '', 200
+    
+    auth_data = request.json
+    print(f"Received auth data: {auth_data}")
+    
+    try:
+        # Bersihin dulu dari backslash
+        user_json = auth_data['user'].replace('\\/', '/')
+        user_data = json.loads(user_json)
+        
+        telegram_id = user_data['id']
+        first_name = user_data.get('first_name', '')
+        last_name = user_data.get('last_name', '')
+        username = user_data.get('username', '')
+        
+        print(f"✅ User authenticated: {telegram_id} - {username}")
+        
+    except Exception as e:
+        print(f"Error parsing user data: {e}")
+        return jsonify({'error': 'Invalid user data'}), 400
+    
+    # Simpan user
+    db = SessionLocal()
+    user = db.query(User).filter(User.telegram_id == telegram_id).first()
+    
+    if not user:
+        user = User(
+            telegram_id=telegram_id,
+            username=username,
+            first_name=first_name,
+            last_name=last_name
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+    
+    db.close()
+    
+    return jsonify({
+        'id': user.telegram_id,
+        'username': user.username,
+        'first_name': user.first_name,
+        'last_name': user.last_name,
+        'balance': user.balance
+    })
+
+@app.route('/api/user/<int:telegram_id>', methods=['GET'])
+def get_user(telegram_id):
+    """Get user data by Telegram ID"""
+    db = SessionLocal()
+    user = db.query(User).filter(User.telegram_id == telegram_id).first()
+    
+    if not user:
+        db.close()
+        return jsonify({'error': 'User not found'}), 404
+    
+    # Ambil riwayat transaksi
+    transactions = db.query(Transaction).filter(
+        Transaction.user_id == user.id,
+        Transaction.status == 'completed'
+    ).order_by(Transaction.completed_at.desc()).limit(10).all()
+    
+    trans_list = []
+    for t in transactions:
+        trans_list.append({
+            'amount': t.amount,
+            'charge_id': t.charge_id,
+            'completed_at': t.completed_at.strftime('%d/%m/%Y %H:%M:%S') if t.completed_at else None
+        })
+    
+    db.close()
+    
+    return jsonify({
+        'id': user.telegram_id,
+        'username': user.username,
+        'first_name': user.first_name,
+        'last_name': user.last_name,
+        'balance': user.balance,
+        'transactions': trans_list
+    })
+
+@app.route('/api/create-deposit', methods=['POST'])
+def create_deposit():
+    """Buat deposit baru dan return payment link"""
+    data = request.json
+    telegram_id = data.get('telegram_id')
+    amount = data.get('amount')
+    
+    if not telegram_id or not amount:
+        return jsonify({'error': 'Missing parameters'}), 400
+    
+    try:
+        amount = int(amount)
+        if amount <= 0 or amount > 2500:
+            return jsonify({'error': 'Invalid amount'}), 400
+    except:
+        return jsonify({'error': 'Invalid amount'}), 400
+    
+    db = SessionLocal()
+    
+    # Cari user
+    user = db.query(User).filter(User.telegram_id == telegram_id).first()
+    if not user:
+        db.close()
+        return jsonify({'error': 'User not found'}), 404
+    
+    # Buat payload unik
+    import random
+    from datetime import datetime
+    timestamp = int(datetime.now(WIB).timestamp())
+    payload = f"deposit:{telegram_id}:{amount}:{random.randint(1000, 9999)}:{timestamp}"
+    
+    # Simpan transaksi
+    transaction = Transaction(
+        user_id=user.id,
+        amount=amount,
+        payload=payload,
+        status='pending',
+        created_at=datetime.now(WIB)
+    )
+    db.add(transaction)
+    db.commit()
+    db.close()
+    
+    # Panggil Bot API untuk createInvoiceLink
+    import requests
+    
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/createInvoiceLink"
+    data = {
+        "title": f"Deposit {amount} Stars",
+        "description": f"Deposit {amount} Telegram Stars",
+        "payload": payload,
+        "currency": "XTR",
+        "prices": [{"label": f"Deposit {amount} ⭐", "amount": amount}],
+        "provider_token": ""
     }
+    
+    response = requests.post(url, json=data)
+    result = response.json()
+    
+    if result.get("ok"):
+        return jsonify({
+            'success': True,
+            'payment_link': result['result'],
+            'amount': amount
+        })
+    else:
+        return jsonify({
+            'success': False,
+            'error': result.get('description', 'Unknown error')
+        }), 500
 
-    // HAPUS FIELD USER DARI TELEGRAMUSER! 
-    // Jangan tambahin field terpisah karena udah ada di authData.user
-
-    console.log('Sending data to server:', authData); // <-- PASTIKAN TIDAK ADA DUPLIKAT
-
-    const response = await fetch(`${API_BASE_URL}/api/auth`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(authData) // <-- KIRIM CUMA authData aja!
-    });
-
-    const responseData = await response.json();
-    console.log('Response:', responseData);
-
-    if (response.ok) {
-      currentUser = responseData;
-      updateUserInfo();
-      document.getElementById('mainContent').style.display = 'block';
-      document.getElementById('historySection').style.display = 'block';
-      loadTransactionHistory();
-    } else {
-      showError('Gagal autentikasi: ' + (responseData.error || 'Unknown error'));
+@app.route('/api/check-transaction', methods=['POST'])
+def check_transaction():
+    """Cek status transaksi berdasarkan payload"""
+    data = request.json
+    payload = data.get('payload')
+    
+    if not payload:
+        return jsonify({'error': 'Missing payload'}), 400
+    
+    db = SessionLocal()
+    transaction = db.query(Transaction).filter(Transaction.payload == payload).first()
+    
+    if not transaction:
+        db.close()
+        return jsonify({'error': 'Transaction not found'}), 404
+    
+    result = {
+        'status': transaction.status,
+        'amount': transaction.amount
     }
-  } catch (error) {
-    showError('Koneksi error: ' + error.message);
-    console.error('Auth error:', error);
-  } finally {
-    showLoading(false);
-  }
-}
+    
+    if transaction.status == 'completed':
+        result['charge_id'] = transaction.charge_id
+        result['completed_at'] = transaction.completed_at.strftime('%d/%m/%Y %H:%M:%S') if transaction.completed_at else None
+    
+    db.close()
+    
+    return jsonify(result)
 
-// Update tampilan user info
-function updateUserInfo() {
-  if (currentUser) {
-    const userInfo = document.getElementById('userInfo');
-    const loginBtn = document.getElementById('loginBtn');
-
-    document.getElementById('userName').textContent =
-      currentUser.first_name || currentUser.username || `User ${currentUser.id}`;
-    document.getElementById('userBalance').textContent = `${currentUser.balance} ⭐`;
-
-    userInfo.style.display = 'flex';
-    loginBtn.style.display = 'none';
-  }
-}
-
-// Tampilkan preview invoice
-function showInvoicePreview() {
-  const amount = parseInt(document.getElementById('amountInput').value);
-
-  if (isNaN(amount) || amount < 1 || amount > 2500) {
-    showError('Masukkan jumlah yang valid (1-2500)');
-    return;
-  }
-
-  document.getElementById('invoiceTitle').textContent = `Deposit ${amount} Stars`;
-  document.getElementById('invoiceAmount').textContent = `${amount} ⭐`;
-  document.getElementById('invoiceTotal').textContent = `${amount} ⭐`;
-  document.getElementById('payAmount').textContent = amount;
-
-  // Buat border struktur invoice
-  const borderEl = document.getElementById('invoiceBorder');
-  borderEl.innerHTML = '';
-
-  for (let i = 0; i < 3; i++) {
-    const row = document.createElement('div');
-    row.style.display = 'flex';
-    row.style.justifyContent = 'space-between';
-    row.style.marginBottom = '10px';
-    row.style.padding = '5px';
-    row.style.background = 'white';
-    row.style.borderRadius = '5px';
-
-    row.innerHTML = `
-            <span>Item ${i+1}</span>
-            <span>${amount/3} ⭐</span>
-        `;
-    borderEl.appendChild(row);
-  }
-
-  document.getElementById('mainContent').style.display = 'none';
-  document.getElementById('invoicePreview').style.display = 'block';
-}
-
-// Proses pembayaran
-async function processPayment() {
-  const amount = parseInt(document.getElementById('amountInput').value);
-
-  if (!currentUser) {
-    showError('Silakan login terlebih dahulu');
-    return;
-  }
-
-  showLoading(true);
-
-  try {
-    const response = await fetch(`${API_BASE_URL}/api/create-deposit`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        telegram_id: currentUser.id,
-        amount: amount
-      })
-    });
-
-    const data = await response.json();
-
-    if (data.success) {
-      // Simpan payload untuk pengecekan
-      currentPayload = data.payment_link.split('$')[1];
-
-      // Buka link pembayaran
-      window.open(data.payment_link, '_blank');
-
-      // Mulai pengecekan status pembayaran
-      startPaymentCheck(currentPayload);
-
-      showSuccess('Silakan selesaikan pembayaran di jendela yang terbuka');
-    } else {
-      showError(data.error || 'Gagal membuat deposit');
-    }
-  } catch (error) {
-    showError('Koneksi error');
-    console.error(error);
-  } finally {
-    showLoading(false);
-  }
-}
-
-// Cek status pembayaran
-function startPaymentCheck(payload) {
-  if (paymentCheckInterval) {
-    clearInterval(paymentCheckInterval);
-  }
-
-  paymentCheckInterval = setInterval(async () => {
-    try {
-      const response = await fetch(`${API_BASE_URL}/api/check-transaction`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ payload })
-      });
-
-      const data = await response.json();
-
-      if (data.status === 'completed') {
-        clearInterval(paymentCheckInterval);
-
-        // Update saldo user
-        currentUser.balance += data.amount;
-        updateUserInfo();
-
-        // Load ulang riwayat
-        loadTransactionHistory();
-
-        // Kembali ke halaman utama
-        document.getElementById('invoicePreview').style.display = 'none';
-        document.getElementById('mainContent').style.display = 'block';
-
-        showSuccess(`Deposit ${data.amount} ⭐ berhasil!`);
-      }
-    } catch (error) {
-      console.error('Error checking payment:', error);
-    }
-  }, 3000); // Cek setiap 3 detik
-}
-
-// Load riwayat transaksi
-async function loadTransactionHistory() {
-  if (!currentUser) return;
-
-  try {
-    const response = await fetch(`${API_BASE_URL}/api/user/${currentUser.id}`);
-    const data = await response.json();
-
-    const historyList = document.getElementById('historyList');
-    historyList.innerHTML = '';
-
-    if (data.transactions && data.transactions.length > 0) {
-      data.transactions.forEach(trans => {
-        const item = document.createElement('div');
-        item.className = 'history-item';
-        item.innerHTML = `
-                    <div>
-                        <div class="history-amount">+${trans.amount} ⭐</div>
-                        <div class="history-date">${trans.completed_at}</div>
-                    </div>
-                    <div>✅</div>
-                `;
-        historyList.appendChild(item);
-      });
-    } else {
-      historyList.innerHTML = '<p style="text-align: center; color: #999;">Belum ada transaksi</p>';
-    }
-  } catch (error) {
-    console.error('Error loading history:', error);
-  }
-}
-
-// Utility functions
-function showLoading(show) {
-  document.getElementById('loading').style.display = show ? 'block' : 'none';
-  if (show) {
-    document.getElementById('mainContent').style.opacity = '0.5';
-    document.getElementById('mainContent').style.pointerEvents = 'none';
-  } else {
-    document.getElementById('mainContent').style.opacity = '1';
-    document.getElementById('mainContent').style.pointerEvents = 'auto';
-  }
-}
-
-function showError(message) {
-  document.getElementById('errorMessage').textContent = message;
-  document.getElementById('errorModal').style.display = 'flex';
-
-  setTimeout(() => {
-    document.getElementById('errorModal').style.display = 'none';
-  }, 5000);
-}
-
-function showSuccess(message) {
-  document.getElementById('successMessage').textContent = message;
-  document.getElementById('successModal').style.display = 'flex';
-
-  setTimeout(() => {
-    document.getElementById('successModal').style.display = 'none';
-  }, 5000);
-}
-
-function closeModal() {
-  document.getElementById('errorModal').style.display = 'none';
-  document.getElementById('successModal').style.display = 'none';
-}
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=8008, debug=True)
