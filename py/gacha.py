@@ -67,20 +67,22 @@ def verify_telegram_auth(auth_data):
     # Buat copy
     data = auth_data.copy()
     
-    # Cek hash
+    # Ambil hash
     check_hash = data.pop('hash', None)
     if not check_hash:
         print("No hash in auth data")
         return None
     
-    # Buat string untuk verifikasi - HANYA gunakan key yang ada di data!
+    # 🔥 YANG BENER: Urutin pake aturan TELEGRAM (Unicode order)
     data_check_arr = []
-    for key in sorted(data.keys()):  # Urutkan alfabetis
+    for key in sorted(data.keys()):  # sorted() itu udah pake Unicode order
         value = data[key]
+        # JANGAN diubah apapun!
         data_check_arr.append(f"{key}={value}")
+    
     data_check_string = "\n".join(data_check_arr)
     
-    print(f"Data string for verification: {data_check_string}")
+    print(f"Data string for verification:\n{data_check_string}")
     
     # Buat secret key
     secret_key = hashlib.sha256(BOT_TOKEN.encode()).digest()
@@ -92,8 +94,8 @@ def verify_telegram_auth(auth_data):
         hashlib.sha256
     ).hexdigest()
     
-    print(f"Expected hash: {check_hash}")
-    print(f"Calculated hash: {calculated_hash}")
+    print(f"Expected: {check_hash}")
+    print(f"Got: {calculated_hash}")
     
     if calculated_hash != check_hash:
         return None
