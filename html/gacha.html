@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Deposit Stars - Gacha System</title>
+    <link rel="stylesheet" href="/GAMES/css/gacha.css">
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <div class="header">
+            <h1>⭐ Deposit Stars</h1>
+            <div class="user-info" id="userInfo" style="display: none;">
+                <span class="user-name" id="userName"></span>
+                <span class="user-balance" id="userBalance">0 ⭐</span>
+            </div>
+            <button class="login-btn" id="loginBtn" style="display: none;">Login dengan Telegram</button>
+        </div>
+
+        <!-- Main Content -->
+        <div class="main-content" id="mainContent" style="display: none;">
+            <!-- Deposit Form -->
+            <div class="deposit-card">
+                <h2>💰 Deposit Stars</h2>
+                <p class="description">Masukkan jumlah Stars yang ingin didepositkan</p>
+                
+                <div class="input-group">
+                    <input type="number" id="amountInput" min="1" max="2500" value="10" placeholder="Jumlah Stars">
+                    <span class="input-suffix">⭐</span>
+                </div>
+                
+                <div class="quick-amounts">
+                    <button class="quick-amount" data-amount="10">10 ⭐</button>
+                    <button class="quick-amount" data-amount="50">50 ⭐</button>
+                    <button class="quick-amount" data-amount="100">100 ⭐</button>
+                    <button class="quick-amount" data-amount="500">500 ⭐</button>
+                </div>
+                
+                <button class="btn-primary" id="continueBtn">Lanjutkan</button>
+            </div>
+
+            <!-- Invoice Preview (Hidden by default) -->
+            <div class="invoice-card" id="invoicePreview" style="display: none;">
+                <h2>🧾 Preview Invoice</h2>
+                
+                <div class="invoice-details">
+                    <div class="invoice-row">
+                        <span>Produk:</span>
+                        <span><strong id="invoiceTitle">Deposit 10 Stars</strong></span>
+                    </div>
+                    <div class="invoice-row">
+                        <span>Jumlah:</span>
+                        <span><strong id="invoiceAmount">10 ⭐</strong></span>
+                    </div>
+                    <div class="invoice-row total">
+                        <span>Total:</span>
+                        <span><strong id="invoiceTotal">10 ⭐</strong></span>
+                    </div>
+                </div>
+                
+                <div class="invoice-border" id="invoiceBorder">
+                    <!-- Border struktur invoice akan diisi oleh JS -->
+                </div>
+                
+                <button class="btn-pay" id="payBtn">
+                    💳 Bayar <span id="payAmount">10</span> ⭐
+                </button>
+                <button class="btn-secondary" id="backBtn">Kembali</button>
+            </div>
+
+            <!-- Loading Indicator -->
+            <div class="loading" id="loading" style="display: none;">
+                <div class="spinner"></div>
+                <p>Memproses...</p>
+            </div>
+        </div>
+
+        <!-- Transaction History -->
+        <div class="history-section" id="historySection" style="display: none;">
+            <h3>📜 Riwayat Transaksi</h3>
+            <div class="history-list" id="historyList">
+                <!-- Akan diisi oleh JS -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Error Modal -->
+    <div class="modal" id="errorModal" style="display: none;">
+        <div class="modal-content">
+            <h3>❌ Error</h3>
+            <p id="errorMessage"></p>
+            <button class="btn-secondary" onclick="closeModal()">Tutup</button>
+        </div>
+    </div>
+
+    <!-- Success Modal -->
+    <div class="modal" id="successModal" style="display: none;">
+        <div class="modal-content">
+            <h3>✅ Berhasil!</h3>
+            <p id="successMessage"></p>
+            <button class="btn-primary" onclick="closeModal()">Tutup</button>
+        </div>
+    </div>
+
+    <script src="/GAMES/js/gacha.js"></script>
+</body>
+</html>
