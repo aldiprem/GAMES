@@ -174,6 +174,27 @@ def save_payment_link(payment_link, payload, transaction_id):
         traceback.print_exc()
         return False
 
+def get_payload_from_link(link_id):
+    """Dapatkan payload dari link ID"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT payload, transaction_id FROM payment_links 
+            WHERE link_id = ? AND status = 'active' AND expires_at > datetime('now')
+        ''', (link_id,))
+        
+        result = cursor.fetchone()
+        conn.close()
+        
+        if result:
+            return {'payload': result[0], 'transaction_id': result[1]}
+        return None
+    except Exception as e:
+        print(f"Error get_payload_from_link: {e}")
+        return None
+
 def get_pending_deposit(payload):
     """Ambil transaksi deposit pending berdasarkan payload"""
     try:
