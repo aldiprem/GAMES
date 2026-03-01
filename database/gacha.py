@@ -1,180 +1,226 @@
-import sqlite3
-import os
-from datetime import datetime
+from flask import Blueprint, render_template, request, jsonify
+from database import users as users_db
+from database import gacha as gacha_db
 import config
+import random
+import time
+import logging
+import hashlib
 
-DB_PATH = config.GACHA_DB
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-def init_database():
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS deposit_transactions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            amount INTEGER NOT NULL,
-            charge_id TEXT UNIQUE,
-            payload TEXT UNIQUE,
-            status TEXT DEFAULT 'pending',
-            product_id TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            completed_at TIMESTAMP
-        )
-    ''')
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS gacha_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            username TEXT,
-            price INTEGER,
-            status TEXT DEFAULT 'available',
-            purchased_at TIMESTAMP,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS user_profiles (
-            user_id INTEGER PRIMARY KEY,
-            total_deposit INTEGER DEFAULT 0,
-            total_gacha INTEGER DEFAULT 0,
-            last_deposit TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    conn.commit()
-    conn.close()
+gacha_bp = Blueprint('gacha', __name__, url_prefix='/gacha')
 
-def add_deposit_transaction(user_id, amount, payload, product_id='gacha_deposit'):
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
+# Konfigurasi
+BOT_USERNAME = config.BOT_USERNAME  # Username bot Anda (tanpa @)
+WEBSITE_URL = config.WEBSITE_URL
+
+@gacha_bp.route('/')
+def index():
+    return render_template('gacha.html')
+
+@gacha_bp.route('/api/user/<int:user_id>')
+def get_user(user_id):
     try:
-        cursor.execute('''
-            INSERT INTO deposit_transactions (user_id, amount, payload, product_id, status)
-            VALUES (?, ?, ?, ?, 'pending')
-        ''', (user_id, amount, payload, product_id))
+        user = users_db.get_user(user_id)
+        if not user:
+            return jsonify({'success': False, 'message': 'User not found'})
         
-        cursor.execute('''
-            INSERT OR IGNORE INTO user_profiles (user_id) VALUES (?)
-        ''', (user_id,))
+        gacha_profile = gacha_db.get_user_gacha_profile(user_id)
         
-        conn.commit()
-        return cursor.lastrowid
+        return jsonify({
+            'success': True,
+            'user': {
+                'user_id': user['user_id'],
+                'username': user.get('username', ''),
+                'full_name': user.get('full_name', ''),
+                'balance': user.get('balance', 0),
+                'total_deposit': gacha_profile.get('total_deposit', 0) if gacha_profile else 0,
+                'total_gacha': gacha_profile.get('total_gacha', 0) if gacha_profile else 0
+            }
+        })
     except Exception as e:
-        print(f"Error add deposit: {e}")
-        return None
-    finally:
-        conn.close()
+        logger.error(f"Error in get_user: {e}")
+        return jsonify({'success': False, 'message': 'Internal server error'})
 
-def complete_deposit_transaction(charge_id, payload):
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
+@gacha_bp.route('/api/deposit/init', methods=['POST'])
+def init_deposit():
+    """
+    Inisialisasi deposit Stars
+    Format payload: deposit:{user_id}:{amount}:{timestamp}:{random}
+    """
     try:
-        cursor.execute('''
-            SELECT user_id, amount FROM deposit_transactions 
-            WHERE payload = ? AND status = 'pending'
-        ''', (payload,))
-        trans = cursor.fetchone()
+        data = request.json
+        user_id = data.get('user_id')
+        amount = data.get('amount')
+        
+        if not user_id or not amount:
+            return jsonify({'success': False, 'message': 'Missing parameters'})
+        
+        try:
+            amount = int(amount)
+            if amount < 1:
+                return jsonify({'success': False, 'message': 'Amount must be at least 1'})
+            if amount > 2500:
+                return jsonify({'success': False, 'message': 'Maximum deposit is 2500 Stars'})
+        except:
+            return jsonify({'success': False, 'message': 'Invalid amount'})
+        
+        # Generate payload unik
+        timestamp = int(time.time())
+        random_code = random.randint(1000, 9999)
+        payload = f"deposit:{user_id}:{amount}:{timestamp}:{random_code}"
+        
+        # Simpan transaksi di database
+        trans_id = gacha_db.add_deposit_transaction(user_id, amount, payload)
+        
+        if not trans_id:
+            return jsonify({'success': False, 'message': 'Failed to create transaction'})
+        
+        # Buat deep link untuk Telegram
+        # Format: https://t.me/bot_username?start=payload
+        payment_link = f"https://t.me/{BOT_USERNAME}?start={payload}"
+        
+        return jsonify({
+            'success': True,
+            'payload': payload,
+            'payment_link': payment_link,
+            'amount': amount,
+            'transaction_id': trans_id,
+            'expires_in': 300,  # 5 menit
+            'user_id': user_id,
+            'bot_username': BOT_USERNAME
+        })
+    except Exception as e:
+        logger.error(f"Error in init_deposit: {e}")
+        return jsonify({'success': False, 'message': 'Internal server error'})
+
+@gacha_bp.route('/api/deposit/check/<path:payload>')
+def check_deposit(payload):
+    """
+    Cek status deposit berdasarkan payload
+    """
+    try:
+        trans = gacha_db.get_pending_deposit(payload)
         
         if not trans:
-            return False
+            return jsonify({'success': False, 'message': 'Transaction not found'})
         
-        user_id, amount = trans
-        
-        cursor.execute('''
-            UPDATE deposit_transactions 
-            SET status = 'completed', charge_id = ?, completed_at = CURRENT_TIMESTAMP
-            WHERE payload = ?
-        ''', (charge_id, payload))
-        
-        cursor.execute('''
-            UPDATE user_profiles 
-            SET total_deposit = total_deposit + ?, last_deposit = CURRENT_TIMESTAMP,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE user_id = ?
-        ''', (amount, user_id))
-        
-        conn.commit()
-        return True
+        return jsonify({
+            'success': True,
+            'status': trans['status'],
+            'amount': trans['amount'],
+            'created_at': trans['created_at'],
+            'completed_at': trans.get('completed_at')
+        })
     except Exception as e:
-        print(f"Error complete deposit: {e}")
-        return False
-    finally:
-        conn.close()
+        logger.error(f"Error in check_deposit: {e}")
+        return jsonify({'success': False, 'message': 'Internal server error'})
 
-def get_user_gacha_profile(user_id):
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
+@gacha_bp.route('/api/deposit/verify', methods=['POST'])
+def verify_deposit():
+    """
+    Verifikasi deposit dari bot (webhook)
+    """
     try:
-        cursor.execute('''
-            SELECT * FROM user_profiles WHERE user_id = ?
-        ''', (user_id,))
-        profile = cursor.fetchone()
+        data = request.json
+        charge_id = data.get('charge_id')
+        payload = data.get('payload')
+        user_id = data.get('user_id')
+        amount = data.get('amount')
+        api_key = data.get('api_key')
         
-        cursor.execute('''
-            SELECT * FROM deposit_transactions 
-            WHERE user_id = ? AND status = 'completed'
-            ORDER BY created_at DESC LIMIT 10
-        ''', (user_id,))
-        deposits = [dict(row) for row in cursor.fetchall()]
+        # Verifikasi API key untuk keamanan
+        expected_key = hashlib.sha256(config.SECRET_KEY.encode()).hexdigest()[:16]
+        if api_key != expected_key:
+            return jsonify({'success': False, 'message': 'Unauthorized'}), 401
         
-        result = dict(profile) if profile else {
-            'user_id': user_id,
-            'total_deposit': 0,
-            'total_gacha': 0
-        }
-        result['deposits'] = deposits
+        if not all([charge_id, payload, user_id, amount]):
+            return jsonify({'success': False, 'message': 'Missing parameters'})
         
-        return result
+        # Complete deposit transaction
+        if gacha_db.complete_deposit_transaction(charge_id, payload):
+            # Update user balance
+            users_db.update_balance(
+                user_id, 
+                amount, 
+                'deposit', 
+                f'Deposit via Stars: {charge_id}'
+            )
+            
+            logger.info(f"✅ Deposit verified: User {user_id}, Amount {amount}, Charge {charge_id}")
+            
+            return jsonify({
+                'success': True, 
+                'message': 'Deposit verified successfully'
+            })
+        else:
+            return jsonify({'success': False, 'message': 'Failed to verify deposit'})
+            
     except Exception as e:
-        print(f"Error get profile: {e}")
-        return None
-    finally:
-        conn.close()
+        logger.error(f"Error in verify_deposit: {e}")
+        return jsonify({'success': False, 'message': 'Internal server error'})
 
-def get_pending_deposit(payload):
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
+# ============ GACHA FUNCTIONS ============
+USERNAME_POOL = [
+    "Stok_Habis", "Coming_Soon", "Username1", "Gacha_Bot", "Telegram_User",
+    "Premium_Name", "Vip_Username", "Short_Name", "Cool_User", "Best_Name"
+]
+
+PRICE_RANGE = [1, 5, 10, 20, 30, 50, 100, 150, 200]
+
+@gacha_bp.route('/api/gacha/random')
+def get_random_username():
     try:
-        cursor.execute('''
-            SELECT * FROM deposit_transactions 
-            WHERE payload = ? AND status = 'pending'
-        ''', (payload,))
-        trans = cursor.fetchone()
-        return dict(trans) if trans else None
+        username = random.choice(USERNAME_POOL)
+        price = random.choice(PRICE_RANGE)
+        
+        if random.random() > 0.5:
+            username = f"{username}{random.randint(1, 999)}"
+        
+        return jsonify({
+            'success': True,
+            'username': username,
+            'price': price
+        })
     except Exception as e:
-        print(f"Error get pending: {e}")
-        return None
-    finally:
-        conn.close()
+        logger.error(f"Error in get_random_username: {e}")
+        return jsonify({'success': False, 'message': 'Internal server error'})
 
-def add_gacha_purchase(user_id, username, price):
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
+@gacha_bp.route('/api/gacha/purchase', methods=['POST'])
+def purchase_gacha():
     try:
-        cursor.execute('''
-            INSERT INTO gacha_history (user_id, username, price, status, purchased_at)
-            VALUES (?, ?, ?, 'purchased', CURRENT_TIMESTAMP)
-        ''', (user_id, username, price))
+        data = request.json
+        user_id = data.get('user_id')
+        username = data.get('username')
+        price = data.get('price')
         
-        cursor.execute('''
-            UPDATE user_profiles 
-            SET total_gacha = total_gacha + 1, updated_at = CURRENT_TIMESTAMP
-            WHERE user_id = ?
-        ''', (user_id,))
+        if not all([user_id, username, price]):
+            return jsonify({'success': False, 'message': 'Missing parameters'})
         
-        conn.commit()
-        return True
+        user = users_db.get_user(user_id)
+        if not user:
+            return jsonify({'success': False, 'message': 'User not found'})
+        
+        if user['balance'] < price:
+            return jsonify({'success': False, 'message': 'Insufficient balance'})
+        
+        if users_db.update_balance(user_id, -price, 'gacha', f'Gacha purchase: {username}'):
+            gacha_db.add_gacha_purchase(user_id, username, price)
+            
+            # Ambil balance terbaru
+            updated_user = users_db.get_user(user_id)
+            
+            return jsonify({
+                'success': True,
+                'message': 'Purchase successful',
+                'username': username,
+                'price': price,
+                'new_balance': updated_user['balance']
+            })
+        else:
+            return jsonify({'success': False, 'message': 'Purchase failed'})
     except Exception as e:
-        print(f"Error add gacha: {e}")
-        return False
-    finally:
-        conn.close()
-
-# Initialize database
-init_database()
+        logger.error(f"Error in purchase_gacha: {e}")
+        return jsonify({'success': False, 'message': 'Internal server error'})
