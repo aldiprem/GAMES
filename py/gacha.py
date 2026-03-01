@@ -63,15 +63,19 @@ def verify_telegram_auth(auth_data):
     if not auth_data:
         return None
     
+    # Buat copy agar tidak mengubah data asli
+    data = auth_data.copy()
+    
     # Cek hash
-    check_hash = auth_data.pop('hash', None)
+    check_hash = data.pop('hash', None)
     if not check_hash:
         return None
     
     # Buat string untuk verifikasi
     data_check_arr = []
-    for key in sorted(auth_data.keys()):
-        data_check_arr.append(f"{key}={auth_data[key]}")
+    for key in sorted(data.keys()):
+        value = data[key]
+        data_check_arr.append(f"{key}={value}")
     data_check_string = "\n".join(data_check_arr)
     
     # Buat secret key dari bot token
@@ -85,9 +89,11 @@ def verify_telegram_auth(auth_data):
     ).hexdigest()
     
     if calculated_hash != check_hash:
+        print(f"Hash mismatch! Expected: {check_hash}, Got: {calculated_hash}")
+        print(f"Data string: {data_check_string}")
         return None
     
-    return auth_data
+    return data
 
 @app.route('/api/auth', methods=['POST'])
 def auth():
