@@ -175,7 +175,8 @@ async def run_bot(config):
                 "Bot ini digunakan untuk memproses pembayaran deposit dari website.\n\n"
                 f"🌐 **Website:** {WEBSITE_URL}\n"
                 f"💰 **Deposit:** Minimal 1 Stars\n\n"
-                "Silakan lakukan deposit melalui website untuk mendapatkan saldo."
+                "Silakan lakukan deposit melalui website untuk mendapatkan saldo.\n\n"
+                "📝 **Test Deposit:** /deposit <jumlah>"
             )
 
         async def handle_payment_link(event, link_id):
@@ -294,7 +295,7 @@ async def run_bot(config):
                 
             except Exception as e:
                 logger.error(f"Error sending invoice: {e}")
-                await event.respond("❌ Gagal mengirim invoice. Silakan coba lagi.")
+                await event.respond(f"❌ Gagal mengirim invoice: {str(e)}")
 
         # ============ HANDLER UNTUK RAW PAYMENT (PRE-CHECKOUT & SUCCESS) ============
         @client.on(events.Raw)
@@ -470,6 +471,89 @@ async def run_bot(config):
                         import traceback
                         traceback.print_exc()
 
+        # ============ HANDLER UNTUK TEST DEPOSIT ============
+        @client.on(events.NewMessage(pattern='/deposit'))
+        async def deposit_test_handler(event):
+            """Handler untuk test deposit via command"""
+            try:
+                # Parse jumlah
+                parts = event.message.text.split()
+                if len(parts) != 2:
+                    await event.respond(
+                        "❌ **Format salah!**\n\n"
+                        "Gunakan: `/deposit <jumlah>`\n"
+                        "Contoh: `/deposit 10`"
+                    )
+                    return
+                
+                try:
+                    amount = int(parts[1])
+                    if amount < 1:
+                        await event.respond("❌ Jumlah minimal 1 ⭐")
+                        return
+                    if amount > 2500:
+                        await event.respond("❌ Maksimal 2500 ⭐")
+                        return
+                except ValueError:
+                    await event.respond("❌ Jumlah harus angka")
+                    return
+                
+                # Generate payload untuk test
+                user_id = event.sender_id
+                timestamp = int(datetime.now().timestamp())
+                random_code = random.randint(1000, 9999)
+                payload = f"deposit:{user_id}:{amount}:{timestamp}:{random_code}"
+                
+                # Simpan di temp_transactions
+                temp_transactions[payload] = {
+                    'user_id': user_id,
+                    'amount': amount,
+                    'status': 'pending',
+                    'created_at': datetime.now().isoformat(),
+                    'test_mode': True
+                }
+                
+                # Kirim invoice
+                await send_stars_invoice(event, amount, payload)
+                
+            except Exception as e:
+                logger.error(f"Error in deposit_test_handler: {e}")
+                await event.respond(f"❌ Error: {str(e)}")
+
+        # ============ HANDLER UNTUK BALANCE (VERSI YANG BENAR) ============
+        @client.on(events.NewMessage(pattern='/balance'))
+        async def balance_handler(event):
+            """Cek saldo Stars bot"""
+            if event.sender_id not in OWNER_ID:
+                await event.respond("❌ Perintah ini hanya untuk owner")
+                return
+            
+            try:
+                # Method yang benar untuk cek saldo Stars
+                result = await client(functions.payments.GetStarsStatusRequest(
+                    peer=await client.get_input_entity('me')
+                ))
+                
+                balance = result.balance
+                
+                # Format response
+                await event.respond(
+                    f"💰 **SALDO BOT STARS**\n\n"
+                    f"**{balance}** ⭐\n\n"
+                    f"📌 Update: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}"
+                )
+                
+            except Exception as e:
+                logger.error(f"Error in balance_handler: {e}")
+                
+                # Coba method alternatif
+                try:
+                    result = await client(functions.payments.GetStarsBalanceRequest())
+                    balance = result.balance
+                    await event.respond(f"💰 **SALDO BOT STARS:** {balance} ⭐")
+                except:
+                    await event.respond(f"❌ Gagal mendapatkan saldo: {str(e)}")
+
         # ============ HANDLER LAINNYA ============
         @client.on(events.NewMessage(pattern='/help'))
         async def help_handler(event):
@@ -481,6 +565,7 @@ async def run_bot(config):
             help_text += "/check <username> - Cek ketersediaan username\n"
             help_text += "/ubah <teks> - Proses hasil check\n"
             help_text += "/balance - Cek saldo Stars bot\n"
+            help_text += "/deposit <jumlah> - Test deposit Stars\n"
             
             if config.get('is_main'):
                 help_text += "\n**PERINTAH BOT UTAMA:**\n"
@@ -490,19 +575,6 @@ async def run_bot(config):
                 help_text += "/totalbots - Statistik bot\n"
             
             await event.respond(help_text)
-
-        @client.on(events.NewMessage(pattern='/balance'))
-        async def balance_handler(event):
-            if event.sender_id not in OWNER_ID:
-                return
-            
-            try:
-                result = await client(functions.payments.GetStarsBalanceRequest())
-                balance = result.balance
-                await event.respond(f"💰 **SALDO BOT STARS:** {balance} ⭐")
-            except Exception as e:
-                logger.error(f"Error in balance_handler: {e}")
-                await event.respond("❌ Gagal mendapatkan saldo.")
 
         @client.on(events.NewMessage(pattern='/ubah'))
         async def ubah_handler(event):
