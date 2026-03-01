@@ -1,418 +1,511 @@
 import os
-from datetime import datetime
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey, BigInteger
-from sqlalchemy.orm import declarative_base
-from sqlalchemy.orm import sessionmaker, relationship
-from dotenv import load_dotenv
-import pytz
-from flask import Flask, request, jsonify, make_response
-from flask_cors import CORS, cross_origin
-from urllib.parse import parse_qs
-import hmac
-import hashlib
 import json
-import logging
-import requests
-import random
+from datetime import datetime
+from flask import Flask, request, jsonify, g
+from flask_cors import CORS
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Boolean, ForeignKey
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, relationship, scoped_session
+import pytz
+from dotenv import load_dotenv
 
-# Setup logging
-logging.basicConfig(level=logging.DEBUG)
-logger = logging.getLogger(__name__)
-
+# Load environment variables
 load_dotenv()
+
+app = Flask(__name__)
+CORS(app)  # Enable CORS for GitHub Pages
 
 # Timezone Indonesia
 WIB = pytz.timezone('Asia/Jakarta')
 
-# Database setup
-DATABASE_URL = os.getenv('DATABASE_URL', 'sqlite:///deposits.db')
+# Database Configuration
+DATABASE_URL = os.getenv('DATABASE_URL', 'sqlite:///gacha.db')
 engine = create_engine(DATABASE_URL, connect_args={'check_same_thread': False} if 'sqlite' in DATABASE_URL else {})
-SessionLocal = sessionmaker(bind=engine)
+
+# Buat SessionLocal
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+# Buat scoped session untuk Flask
+db_session = scoped_session(SessionLocal)
+
 Base = declarative_base()
+Base.query = db_session.query_property()
 
 # Models
 class User(Base):
     __tablename__ = 'users'
     
     id = Column(Integer, primary_key=True)
-    telegram_id = Column(BigInteger, unique=True, nullable=False)
-    username = Column(String)
-    first_name = Column(String)
-    last_name = Column(String)
-    balance = Column(Integer, default=0)
+    telegram_id = Column(Integer, unique=True, nullable=False)
+    username = Column(String(100))
+    first_name = Column(String(100))
+    last_name = Column(String(100))
+    balance = Column(Integer, default=0)  # Stars balance
     created_at = Column(DateTime, default=lambda: datetime.now(WIB))
+    updated_at = Column(DateTime, default=lambda: datetime.now(WIB), onupdate=lambda: datetime.now(WIB))
     
-    transactions = relationship('Transaction', back_populates='user')
+    # Relationships
+    transactions = relationship('Transaction', back_populates='user', cascade='all, delete-orphan')
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'telegram_id': self.telegram_id,
+            'username': self.username,
+            'first_name': self.first_name,
+            'last_name': self.last_name,
+            'balance': self.balance,
+            'created_at': self.created_at.isoformat() if self.created_at else None
+        }
 
 class Transaction(Base):
     __tablename__ = 'transactions'
     
     id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey('users.id'))
-    amount = Column(Integer, nullable=False)
-    payload = Column(String, unique=True)
-    charge_id = Column(String, unique=True)
-    status = Column(String, default='pending')  # pending, completed, refunded
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    amount = Column(Integer, nullable=False)  # Stars amount
+    payload = Column(String(255), unique=True, nullable=False)
+    charge_id = Column(String(255), unique=True)
+    status = Column(String(50), default='pending')  # pending, completed, failed, refunded
     created_at = Column(DateTime, default=lambda: datetime.now(WIB))
     completed_at = Column(DateTime)
+    refunded_at = Column(DateTime)
     
+    # Relationships
     user = relationship('User', back_populates='transactions')
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'user_id': self.user_id,
+            'amount': self.amount,
+            'payload': self.payload,
+            'charge_id': self.charge_id,
+            'status': self.status,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'completed_at': self.completed_at.isoformat() if self.completed_at else None,
+            'refunded_at': self.refunded_at.isoformat() if self.refunded_at else None
+        }
 
 # Create tables
 Base.metadata.create_all(bind=engine)
 
-# Flask app
-app = Flask(__name__)
+# Helper functions
+def get_wib_time():
+    return datetime.now(WIB)
 
-# CORS Configuration - Yang paling penting!
-CORS(app, resources={
-    r"/api/*": {
-        "origins": ["*"],  # Untuk development, di production ganti dengan domain specific
-        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        "allow_headers": ["Content-Type", "Authorization", "X-Requested-With"],
-        "expose_headers": ["Content-Type"],
-        "supports_credentials": True,
-        "max_age": 3600
-    }
-})
+def generate_payload(user_id, amount):
+    """Generate unique payload for transaction"""
+    import random
+    timestamp = int(get_wib_time().timestamp())
+    random_num = random.randint(1000, 9999)
+    return f"deposit:{user_id}:{amount}:{random_num}:{timestamp}"
 
-# Middleware untuk handle CORS preflight
-@app.after_request
-def after_request(response):
-    response.headers.add('Access-Control-Allow-Origin', '*')
-    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-Requested-With')
-    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
-    response.headers.add('Access-Control-Allow-Credentials', 'true')
-    return response
+# API Routes
+@app.before_request
+def before_request():
+    g.db = db_session
 
-BOT_TOKEN = os.getenv('BOT_TOKEN')
+@app.teardown_appcontext
+def shutdown_session(exception=None):
+    db_session.remove()
 
-def verify_telegram_auth(auth_data):
-    """Verifikasi data auth dari Telegram Login Widget"""
-    if not auth_data:
-        return None
-    
-    # Buat copy
-    data = auth_data.copy()
-    
-    # Ambil hash
-    check_hash = data.pop('hash', None)
-    if not check_hash:
-        logger.error("No hash in auth data")
-        return None
-    
-    # Parse user field jika ada
-    if 'user' in data:
-        try:
-            # Parse user string menjadi object
-            if isinstance(data['user'], str):
-                user_obj = json.loads(data['user'])
-                # Stringify ulang tanpa spasi dan format standar
-                data['user'] = json.dumps(user_obj, separators=(',', ':'))
-        except Exception as e:
-            logger.error(f"Error parsing user: {e}")
-            return None
-    
-    # Urutkan key secara alfabetis
-    data_check_arr = []
-    for key in sorted(data.keys()):
-        value = data[key]
-        data_check_arr.append(f"{key}={value}")
-    
-    data_check_string = "\n".join(data_check_arr)
-    
-    logger.debug(f"Data string for verification:\n{data_check_string}")
-    
-    # Buat secret key dari bot token (gunakan SHA256)
-    secret_key = hashlib.sha256(BOT_TOKEN.encode()).digest()
-    
-    # Hitung hash menggunakan HMAC-SHA256
-    calculated_hash = hmac.new(
-        secret_key,
-        data_check_string.encode(),
-        hashlib.sha256
-    ).hexdigest()
-    
-    logger.debug(f"Expected: {check_hash}")
-    logger.debug(f"Got: {calculated_hash}")
-    
-    # Bandingkan hash (gunakan compare_digest untuk keamanan)
-    if not hmac.compare_digest(calculated_hash, check_hash):
-        logger.error(f"Hash mismatch! Expected: {check_hash}, Got: {calculated_hash}")
-        return None
-    
-    # Parse user data untuk response
-    if 'user' in data:
-        try:
-            if isinstance(data['user'], str):
-                data['user'] = json.loads(data['user'])
-        except:
-            pass
-    
-    return data
-
-@app.route('/', methods=['GET'])
-@cross_origin()
-def home():
+@app.route('/')
+def index():
     return jsonify({
         'status': 'online',
-        'message': 'Gacha API is running',
-        'endpoints': ['/api/auth', '/api/user/<id>', '/api/create-deposit', '/api/check-transaction']
+        'message': 'Gacha Stars API',
+        'time': get_wib_time().isoformat()
     })
 
-@app.route('/api/test', methods=['GET'])
-@cross_origin()
-def test():
-    """Endpoint test untuk cek koneksi"""
-    return jsonify({'status': 'ok', 'message': 'API is working', 'timestamp': datetime.now().isoformat()})
-
-@app.route('/api/auth', methods=['POST', 'OPTIONS'])
-@cross_origin()
-def auth():
-    if request.method == 'OPTIONS':
-        return '', 200
+@app.route('/api/user', methods=['GET'])
+def get_user():
+    """Get or create user by Telegram ID"""
+    telegram_id = request.args.get('telegram_id')
+    
+    if not telegram_id:
+        return jsonify({'success': False, 'error': 'telegram_id required'}), 400
     
     try:
-        auth_data = request.json
-        logger.info(f"Received auth data: {auth_data}")
+        telegram_id = int(telegram_id)
+    except:
+        return jsonify({'success': False, 'error': 'invalid telegram_id'}), 400
+    
+    # Get user data from request
+    username = request.args.get('username', '')
+    first_name = request.args.get('first_name', '')
+    last_name = request.args.get('last_name', '')
+    
+    user = db_session.query(User).filter(User.telegram_id == telegram_id).first()
+    
+    if not user:
+        # Create new user
+        user = User(
+            telegram_id=telegram_id,
+            username=username,
+            first_name=first_name,
+            last_name=last_name,
+            balance=0
+        )
+        db_session.add(user)
+        db_session.commit()
+        db_session.refresh(user)
+    
+    return jsonify({
+        'success': True,
+        'user': user.to_dict()
+    })
+
+@app.route('/api/user/balance', methods=['GET'])
+def get_balance():
+    """Get user balance"""
+    telegram_id = request.args.get('telegram_id')
+    
+    if not telegram_id:
+        return jsonify({'success': False, 'error': 'telegram_id required'}), 400
+    
+    try:
+        telegram_id = int(telegram_id)
+    except:
+        return jsonify({'success': False, 'error': 'invalid telegram_id'}), 400
+    
+    user = db_session.query(User).filter(User.telegram_id == telegram_id).first()
+    
+    if not user:
+        return jsonify({'success': False, 'error': 'user not found'}), 404
+    
+    return jsonify({
+        'success': True,
+        'balance': user.balance
+    })
+
+@app.route('/api/deposit/create', methods=['POST'])
+def create_deposit():
+    """Create deposit invoice"""
+    data = request.json
+    
+    if not data:
+        return jsonify({'success': False, 'error': 'no data provided'}), 400
+    
+    telegram_id = data.get('telegram_id')
+    amount = data.get('amount')
+    
+    if not telegram_id or not amount:
+        return jsonify({'success': False, 'error': 'telegram_id and amount required'}), 400
+    
+    try:
+        telegram_id = int(telegram_id)
+        amount = int(amount)
         
-        if not auth_data:
-            return jsonify({'error': 'No data received'}), 400
+        if amount <= 0 or amount > 2500:
+            return jsonify({'success': False, 'error': 'invalid amount (1-2500)'}), 400
+            
+    except:
+        return jsonify({'success': False, 'error': 'invalid parameters'}), 400
+    
+    # Get or create user
+    user = db_session.query(User).filter(User.telegram_id == telegram_id).first()
+    
+    if not user:
+        # Get user details from request
+        username = data.get('username', '')
+        first_name = data.get('first_name', '')
+        last_name = data.get('last_name', '')
         
-        # Verifikasi data
-        verified_data = verify_telegram_auth(auth_data)
-        if not verified_data:
-            return jsonify({'error': 'Invalid authentication data'}), 401
+        user = User(
+            telegram_id=telegram_id,
+            username=username,
+            first_name=first_name,
+            last_name=last_name,
+            balance=0
+        )
+        db_session.add(user)
+        db_session.commit()
+        db_session.refresh(user)
+    
+    # Generate unique payload
+    payload = generate_payload(telegram_id, amount)
+    
+    # Create transaction record
+    transaction = Transaction(
+        user_id=user.id,
+        amount=amount,
+        payload=payload,
+        status='pending'
+    )
+    db_session.add(transaction)
+    db_session.commit()
+    
+    # Call Telegram Bot API to create invoice link
+    bot_token = os.getenv('BOT_TOKEN')
+    
+    if not bot_token:
+        return jsonify({'success': False, 'error': 'bot token not configured'}), 500
+    
+    url = f"https://api.telegram.org/bot{bot_token}/createInvoiceLink"
+    
+    invoice_data = {
+        "title": f"Deposit {amount} Stars",
+        "description": f"Deposit {amount} Telegram Stars",
+        "payload": payload,
+        "currency": "XTR",
+        "prices": [{"label": f"Deposit {amount} ⭐", "amount": amount}],
+        "provider_token": ""
+    }
+    
+    try:
+        import requests
+        response = requests.post(url, json=invoice_data, timeout=10)
+        result = response.json()
         
-        # Ambil user data dari verified_data
-        user_data = verified_data.get('user', {})
-        if isinstance(user_data, str):
-            user_data = json.loads(user_data)
-        
-        telegram_id = user_data.get('id')
-        if not telegram_id:
-            return jsonify({'error': 'User ID not found'}), 400
+        if result.get('ok'):
+            invoice_link = result['result']
             
-        first_name = user_data.get('first_name', '')
-        last_name = user_data.get('last_name', '')
-        username = user_data.get('username', '')
-        
-        logger.info(f"✅ User authenticated: {telegram_id} - {username}")
-        
-        # Simpan/update user ke database
-        db = SessionLocal()
-        try:
-            user = db.query(User).filter(User.telegram_id == telegram_id).first()
+            return jsonify({
+                'success': True,
+                'invoice_link': invoice_link,
+                'payload': payload,
+                'amount': amount,
+                'transaction_id': transaction.id
+            })
+        else:
+            # Delete pending transaction
+            db_session.delete(transaction)
+            db_session.commit()
             
-            if not user:
-                user = User(
-                    telegram_id=telegram_id,
-                    username=username,
-                    first_name=first_name,
-                    last_name=last_name,
-                    balance=0
-                )
-                db.add(user)
-            else:
-                # Update data user jika perlu
-                user.username = username
-                user.first_name = first_name
-                user.last_name = last_name
-            
-            db.commit()
-            db.refresh(user)
-            
-            response_data = {
-                'id': user.telegram_id,
-                'username': user.username,
-                'first_name': user.first_name,
-                'last_name': user.last_name,
-                'balance': user.balance
-            }
-            
-            logger.info(f"User data sent: {response_data}")
-            return jsonify(response_data)
-            
-        except Exception as e:
-            db.rollback()
-            logger.error(f"Database error: {e}")
-            return jsonify({'error': 'Database error'}), 500
-        finally:
-            db.close()
+            return jsonify({
+                'success': False,
+                'error': result.get('description', 'Failed to create invoice')
+            }), 500
             
     except Exception as e:
-        logger.error(f"Auth error: {e}")
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/user/<int:telegram_id>', methods=['GET', 'OPTIONS'])
-@cross_origin()
-def get_user(telegram_id):
-    if request.method == 'OPTIONS':
-        return '', 200
-        
-    """Get user data by Telegram ID"""
-    db = SessionLocal()
-    try:
-        user = db.query(User).filter(User.telegram_id == telegram_id).first()
-        
-        if not user:
-            return jsonify({'error': 'User not found'}), 404
-        
-        # Ambil riwayat transaksi
-        transactions = db.query(Transaction).filter(
-            Transaction.user_id == user.id,
-            Transaction.status == 'completed'
-        ).order_by(Transaction.completed_at.desc()).limit(10).all()
-        
-        trans_list = []
-        for t in transactions:
-            trans_list.append({
-                'amount': t.amount,
-                'charge_id': t.charge_id,
-                'completed_at': t.completed_at.strftime('%d/%m/%Y %H:%M:%S') if t.completed_at else None
-            })
+        # Delete pending transaction
+        db_session.delete(transaction)
+        db_session.commit()
         
         return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/api/transactions/<telegram_id>', methods=['GET'])
+def get_user_transactions(telegram_id):
+    """Get user transactions"""
+    try:
+        telegram_id = int(telegram_id)
+    except:
+        return jsonify({'success': False, 'error': 'invalid telegram_id'}), 400
+    
+    user = db_session.query(User).filter(User.telegram_id == telegram_id).first()
+    
+    if not user:
+        return jsonify({'success': False, 'error': 'user not found'}), 404
+    
+    status = request.args.get('status', 'all')
+    
+    query = db_session.query(Transaction).filter(Transaction.user_id == user.id)
+    
+    if status != 'all':
+        query = query.filter(Transaction.status == status)
+    
+    transactions = query.order_by(Transaction.created_at.desc()).limit(50).all()
+    
+    return jsonify({
+        'success': True,
+        'transactions': [t.to_dict() for t in transactions]
+    })
+
+@app.route('/api/transaction/check/<payload>', methods=['GET'])
+def check_transaction(payload):
+    """Check transaction status by payload"""
+    transaction = db_session.query(Transaction).filter(Transaction.payload == payload).first()
+    
+    if not transaction:
+        return jsonify({'success': False, 'error': 'transaction not found'}), 404
+    
+    return jsonify({
+        'success': True,
+        'transaction': transaction.to_dict()
+    })
+
+@app.route('/api/webhook/telegram', methods=['POST'])
+def telegram_webhook():
+    """Webhook untuk menerima update dari Telegram (opsional)"""
+    # Ini bisa digunakan jika ingin menerima update langsung
+    # Tapi kita sudah menggunakan polling di b.py
+    return jsonify({'status': 'ok'})
+
+# ============ TAMBAHKAN ENDPOINT INI ============
+
+@app.route('/api/test', methods=['GET'])
+def api_test():
+    """Endpoint untuk test koneksi"""
+    return jsonify({
+        'success': True,
+        'status': 'online',
+        'time': get_wib_time().isoformat()
+    })
+
+@app.route('/api/auth', methods=['POST'])
+def api_auth():
+    """Autentikasi user dari Telegram"""
+    try:
+        data = request.json
+        if not data or 'user' not in data:
+            return jsonify({'success': False, 'error': 'Invalid auth data'}), 400
+        
+        # Parse user data
+        user_data = json.loads(data['user'])
+        
+        telegram_id = user_data.get('id')
+        username = user_data.get('username', '')
+        first_name = user_data.get('first_name', '')
+        last_name = user_data.get('last_name', '')
+        
+        if not telegram_id:
+            return jsonify({'success': False, 'error': 'No user ID'}), 400
+        
+        # Cari atau buat user
+        user = db_session.query(User).filter(User.telegram_id == telegram_id).first()
+        
+        if not user:
+            user = User(
+                telegram_id=telegram_id,
+                username=username,
+                first_name=first_name,
+                last_name=last_name,
+                balance=0
+            )
+            db_session.add(user)
+            db_session.commit()
+            db_session.refresh(user)
+        
+        return jsonify({
+            'success': True,
             'id': user.telegram_id,
             'username': user.username,
             'first_name': user.first_name,
             'last_name': user.last_name,
-            'balance': user.balance,
-            'transactions': trans_list
+            'balance': user.balance
         })
-    finally:
-        db.close()
-
-@app.route('/api/create-deposit', methods=['POST', 'OPTIONS'])
-@cross_origin()
-def create_deposit():
-    if request.method == 'OPTIONS':
-        return '', 200
         
-    """Buat deposit baru dan return payment link"""
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/create-deposit', methods=['POST'])
+def api_create_deposit():
+    """Buat deposit invoice"""
     try:
         data = request.json
-        logger.info(f"Create deposit request: {data}")
-        
         telegram_id = data.get('telegram_id')
         amount = data.get('amount')
         
         if not telegram_id or not amount:
-            return jsonify({'error': 'Missing parameters'}), 400
+            return jsonify({'success': False, 'error': 'telegram_id and amount required'}), 400
         
-        try:
-            amount = int(amount)
-            if amount <= 0 or amount > 2500:
-                return jsonify({'error': 'Invalid amount (must be 1-2500)'}), 400
-        except:
-            return jsonify({'error': 'Invalid amount format'}), 400
+        # Cari user
+        user = db_session.query(User).filter(User.telegram_id == telegram_id).first()
+        if not user:
+            return jsonify({'success': False, 'error': 'User not found'}), 404
         
-        db = SessionLocal()
+        # Generate payload
+        payload = generate_payload(telegram_id, amount)
         
-        try:
-            # Cari user
-            user = db.query(User).filter(User.telegram_id == telegram_id).first()
-            if not user:
-                return jsonify({'error': 'User not found'}), 404
+        # Buat transaksi
+        transaction = Transaction(
+            user_id=user.id,
+            amount=amount,
+            payload=payload,
+            status='pending'
+        )
+        db_session.add(transaction)
+        db_session.commit()
+        
+        # Buat invoice link
+        bot_token = os.getenv('BOT_TOKEN')
+        url = f"https://api.telegram.org/bot{bot_token}/createInvoiceLink"
+        
+        invoice_data = {
+            "title": f"Deposit {amount} Stars",
+            "description": f"Deposit {amount} Telegram Stars",
+            "payload": payload,
+            "currency": "XTR",
+            "prices": [{"label": f"Deposit {amount} ⭐", "amount": amount}],
+            "provider_token": ""
+        }
+        
+        response = requests.post(url, json=invoice_data, timeout=10)
+        result = response.json()
+        
+        if result.get('ok'):
+            return jsonify({
+                'success': True,
+                'payment_link': result['result'],
+                'payload': payload,
+                'amount': amount
+            })
+        else:
+            # Hapus transaksi jika gagal
+            db_session.delete(transaction)
+            db_session.commit()
+            return jsonify({'success': False, 'error': result.get('description', 'Failed to create invoice')}), 500
             
-            # Buat payload unik
-            timestamp = int(datetime.now(WIB).timestamp())
-            payload = f"deposit:{telegram_id}:{amount}:{random.randint(1000, 9999)}:{timestamp}"
-            
-            # Simpan transaksi
-            transaction = Transaction(
-                user_id=user.id,
-                amount=amount,
-                payload=payload,
-                status='pending',
-                created_at=datetime.now(WIB)
-            )
-            db.add(transaction)
-            db.commit()
-            
-            # Panggil Bot API untuk createInvoiceLink
-            url = f"https://api.telegram.org/bot{BOT_TOKEN}/createInvoiceLink"
-            invoice_data = {
-                "title": f"Deposit {amount} Stars",
-                "description": f"Deposit {amount} Telegram Stars",
-                "payload": payload,
-                "currency": "XTR",
-                "prices": [{"label": f"Deposit {amount} ⭐", "amount": amount}],
-                "provider_token": ""
-            }
-            
-            logger.info(f"Calling Telegram API: {url}")
-            response = requests.post(url, json=invoice_data, timeout=10)
-            result = response.json()
-            
-            logger.info(f"Telegram API response: {result}")
-            
-            if result.get("ok"):
-                return jsonify({
-                    'success': True,
-                    'payment_link': result['result'],
-                    'amount': amount,
-                    'payload': payload
-                })
-            else:
-                return jsonify({
-                    'success': False,
-                    'error': result.get('description', 'Unknown error from Telegram')
-                }), 500
-                
-        finally:
-            db.close()
-            
-    except requests.exceptions.Timeout:
-        logger.error("Telegram API timeout")
-        return jsonify({'error': 'Telegram API timeout'}), 504
-    except requests.exceptions.ConnectionError:
-        logger.error("Telegram API connection error")
-        return jsonify({'error': 'Cannot connect to Telegram API'}), 502
     except Exception as e:
-        logger.error(f"Create deposit error: {e}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'success': False, 'error': str(e)}), 500
 
-@app.route('/api/check-transaction', methods=['POST', 'OPTIONS'])
-@cross_origin()
-def check_transaction():
-    if request.method == 'OPTIONS':
-        return '', 200
-        
-    """Cek status transaksi berdasarkan payload"""
+@app.route('/api/check-transaction', methods=['POST'])
+def api_check_transaction():
+    """Cek status transaksi"""
     try:
         data = request.json
         payload = data.get('payload')
         
         if not payload:
-            return jsonify({'error': 'Missing payload'}), 400
+            return jsonify({'success': False, 'error': 'Payload required'}), 400
         
-        db = SessionLocal()
-        try:
-            transaction = db.query(Transaction).filter(Transaction.payload == payload).first()
-            
-            if not transaction:
-                return jsonify({'error': 'Transaction not found'}), 404
-            
-            result = {
-                'status': transaction.status,
-                'amount': transaction.amount
-            }
-            
-            if transaction.status == 'completed':
-                result['charge_id'] = transaction.charge_id
-                result['completed_at'] = transaction.completed_at.strftime('%d/%m/%Y %H:%M:%S') if transaction.completed_at else None
-            
-            logger.info(f"Transaction check: {payload} -> {result}")
-            return jsonify(result)
-            
-        finally:
-            db.close()
-            
+        transaction = db_session.query(Transaction).filter(Transaction.payload == payload).first()
+        
+        if not transaction:
+            return jsonify({'success': False, 'error': 'Transaction not found'}), 404
+        
+        return jsonify({
+            'success': True,
+            'status': transaction.status,
+            'amount': transaction.amount,
+            'completed_at': transaction.completed_at.isoformat() if transaction.completed_at else None
+        })
+        
     except Exception as e:
-        logger.error(f"Check transaction error: {e}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/user/<int:telegram_id>', methods=['GET'])
+def api_user_detail(telegram_id):
+    """Get user details and transactions"""
+    try:
+        user = db_session.query(User).filter(User.telegram_id == telegram_id).first()
+        
+        if not user:
+            return jsonify({'success': False, 'error': 'User not found'}), 404
+        
+        # Ambil transaksi
+        transactions = db_session.query(Transaction).filter(
+            Transaction.user_id == user.id
+        ).order_by(Transaction.created_at.desc()).limit(50).all()
+        
+        return jsonify({
+            'success': True,
+            'user': user.to_dict(),
+            'transactions': [t.to_dict() for t in transactions]
+        })
+        
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+# ============ AKHIR PENAMBAHAN ============
 
 if __name__ == '__main__':
-    logger.info("Starting Flask server on http://0.0.0.0:8008")
-    app.run(host='0.0.0.0', port=8008, debug=True, threaded=True)
+    port = int(os.getenv('PORT', 8080))
+    app.run(host='0.0.0.0', port=port, debug=False)
+
+# Ekspor untuk digunakan di b.py
+__all__ = ['SessionLocal', 'User', 'Transaction', 'get_wib_time', 'engine', 'Base', 'db_session', 'app']
