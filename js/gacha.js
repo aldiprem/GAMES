@@ -3,6 +3,8 @@ const API_BASE_URL = 'https://logs-meets-charlie-wheels.trycloudflare.com';
 let currentUser = null;
 let currentPayload = null;
 let paymentCheckInterval = null;
+let reconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 3;
 
 // Inisialisasi Telegram Web App
 const tg = window.Telegram.WebApp;
@@ -13,19 +15,75 @@ tg.ready();
 tg.setHeaderColor('#667eea');
 tg.setBackgroundColor('#f8f9fa');
 
+// Cek koneksi ke API sebelum melakukan apapun
+async function checkApiConnection() {
+    try {
+        const response = await fetchWithTimeout(`${API_BASE_URL}/api/test`, {
+            method: 'GET',
+            timeout: 5000
+        });
+        
+        if (response.ok) {
+            console.log('✅ API Connection OK');
+            return true;
+        }
+    } catch (error) {
+        console.error('❌ API Connection Failed:', error);
+        return false;
+    }
+}
+
+// Fetch dengan timeout
+async function fetchWithTimeout(url, options = {}) {
+    const { timeout = 10000 } = options;
+    
+    const controller = new AbortController();
+    const id = setTimeout(() => controller.abort(), timeout);
+    
+    try {
+        const response = await fetch(url, {
+            ...options,
+            signal: controller.signal,
+            mode: 'cors',
+            credentials: 'omit',
+            headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                ...options.headers
+            }
+        });
+        clearTimeout(id);
+        return response;
+    } catch (error) {
+        clearTimeout(id);
+        throw error;
+    }
+}
+
 // Cek apakah user sudah login via Telegram
-document.addEventListener('DOMContentLoaded', function() {
+document.addEventListener('DOMContentLoaded', async function() {
+    showLoading(true);
+    
+    // Cek koneksi API dulu
+    const apiConnected = await checkApiConnection();
+    if (!apiConnected) {
+        showError('Tidak dapat terhubung ke server. Periksa koneksi internet Anda.');
+        showLoading(false);
+        return;
+    }
+    
     if (tg.initDataUnsafe && tg.initDataUnsafe.user) {
-        authenticateUser();
+        await authenticateUser();
     } else {
         document.getElementById('loginBtn').style.display = 'block';
         showError('Silakan login melalui Telegram terlebih dahulu');
+        showLoading(false);
     }
 });
 
 // Event Listeners
 document.getElementById('loginBtn').addEventListener('click', () => {
-    tg.openTelegramLink('https://t.me/fTamous_bot'); // Ganti dengan username bot Anda
+    tg.openTelegramLink('https://t.me/fTamous_bot');
 });
 
 document.getElementById('continueBtn').addEventListener('click', showInvoicePreview);
@@ -51,12 +109,14 @@ function formatNumber(num) {
     return num.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".");
 }
 
-async function authenticateUser() {
-    showLoading(true);
-
+async function authenticateUser(retryCount = 0) {
     try {
         const initData = tg.initData;
         console.log('Raw initData:', initData);
+
+        if (!initData) {
+            throw new Error('No initData from Telegram');
+        }
 
         // Parse initData menjadi object
         const params = new URLSearchParams(initData);
@@ -79,30 +139,47 @@ async function authenticateUser() {
 
         console.log('Sending auth data:', authData);
 
-        const response = await fetch(`${API_BASE_URL}/api/auth`, {
+        const response = await fetchWithTimeout(`${API_BASE_URL}/api/auth`, {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(authData)
+            body: JSON.stringify(authData),
+            timeout: 10000
         });
+
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
 
         const responseData = await response.json();
         console.log('Auth response:', responseData);
 
-        if (response.ok) {
-            currentUser = responseData;
-            updateUserInfo();
-            document.getElementById('mainContent').style.display = 'block';
-            document.getElementById('historySection').style.display = 'block';
-            loadTransactionHistory();
-            showSuccess(`Selamat datang, ${currentUser.first_name || currentUser.username}!`);
-        } else {
-            showError('Gagal autentikasi: ' + (responseData.error || 'Unknown error'));
+        if (responseData.error) {
+            throw new Error(responseData.error);
         }
+
+        currentUser = responseData;
+        updateUserInfo();
+        document.getElementById('mainContent').style.display = 'block';
+        document.getElementById('historySection').style.display = 'block';
+        await loadTransactionHistory();
+        showSuccess(`Selamat datang, ${currentUser.first_name || currentUser.username}!`);
+        
+        // Reset reconnect attempts on success
+        reconnectAttempts = 0;
+        
     } catch (error) {
-        showError('Koneksi error: ' + error.message);
         console.error('Auth error:', error);
+        
+        if (error.name === 'AbortError') {
+            showError('Koneksi timeout. Periksa koneksi internet Anda.');
+        } else if (retryCount < MAX_RECONNECT_ATTEMPTS) {
+            // Retry connection
+            reconnectAttempts++;
+            showError(`Koneksi gagal. Mencoba ulang... (${retryCount + 1}/${MAX_RECONNECT_ATTEMPTS})`);
+            setTimeout(() => authenticateUser(retryCount + 1), 2000);
+        } else {
+            showError('Gagal terhubung ke server. Silakan refresh halaman.');
+            document.getElementById('loginBtn').style.display = 'block';
+        }
     } finally {
         showLoading(false);
     }
@@ -155,23 +232,26 @@ async function processPayment() {
     showLoading(true);
 
     try {
-        const response = await fetch(`${API_BASE_URL}/api/create-deposit`, {
+        const response = await fetchWithTimeout(`${API_BASE_URL}/api/create-deposit`, {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
             body: JSON.stringify({
                 telegram_id: currentUser.id,
                 amount: amount
-            })
+            }),
+            timeout: 15000
         });
 
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
         const data = await response.json();
+        console.log('Deposit response:', data);
 
         if (data.success) {
             // Extract payload dari payment link
             const paymentLink = data.payment_link;
-            currentPayload = paymentLink.split('$')[1] || paymentLink.split('/').pop();
+            currentPayload = data.payload || paymentLink.split('$')[1] || paymentLink.split('/').pop();
 
             // Set link pembayaran ke tombol
             document.getElementById('paymentLink').href = paymentLink;
@@ -191,8 +271,12 @@ async function processPayment() {
             showError(data.error || 'Gagal membuat deposit');
         }
     } catch (error) {
-        showError('Koneksi error: ' + error.message);
         console.error('Payment error:', error);
+        if (error.name === 'AbortError') {
+            showError('Koneksi timeout. Silakan coba lagi.');
+        } else {
+            showError('Koneksi error: ' + error.message);
+        }
     } finally {
         showLoading(false);
     }
@@ -217,13 +301,15 @@ function startPaymentCheck(payload) {
         checkCount++;
 
         try {
-            const response = await fetch(`${API_BASE_URL}/api/check-transaction`, {
+            const response = await fetchWithTimeout(`${API_BASE_URL}/api/check-transaction`, {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ payload })
+                body: JSON.stringify({ payload }),
+                timeout: 5000
             });
+
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
 
             const data = await response.json();
 
@@ -236,7 +322,7 @@ function startPaymentCheck(payload) {
                 updateUserInfo();
 
                 // Load ulang riwayat
-                loadTransactionHistory();
+                await loadTransactionHistory();
 
                 // Kembali ke halaman utama
                 document.getElementById('invoicePreview').style.display = 'none';
@@ -246,6 +332,8 @@ function startPaymentCheck(payload) {
                 
                 // Kirim notifikasi ke Telegram
                 tg.HapticFeedback.notificationOccurred('success');
+                
+                return;
             }
 
             document.getElementById('paymentStatus').textContent = 
@@ -259,6 +347,7 @@ function startPaymentCheck(payload) {
 
         } catch (error) {
             console.error('Error checking payment:', error);
+            // Don't stop interval on error, just continue
         }
     }, 3000); // Cek setiap 3 detik
 }
@@ -277,7 +366,15 @@ async function loadTransactionHistory() {
     if (!currentUser) return;
 
     try {
-        const response = await fetch(`${API_BASE_URL}/api/user/${currentUser.id}`);
+        const response = await fetchWithTimeout(`${API_BASE_URL}/api/user/${currentUser.id}`, {
+            method: 'GET',
+            timeout: 5000
+        });
+
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
         const data = await response.json();
 
         const historyList = document.getElementById('historyList');
@@ -303,6 +400,7 @@ async function loadTransactionHistory() {
         }
     } catch (error) {
         console.error('Error loading history:', error);
+        // Don't show error to user for history loading
     }
 }
 
@@ -311,7 +409,9 @@ function showLoading(show) {
     const loadingEl = document.getElementById('loading');
     const mainContent = document.getElementById('mainContent');
     
-    loadingEl.style.display = show ? 'block' : 'none';
+    if (loadingEl) {
+        loadingEl.style.display = show ? 'block' : 'none';
+    }
     
     if (mainContent) {
         if (show) {
@@ -329,7 +429,9 @@ function showError(message) {
     document.getElementById('errorModal').style.display = 'flex';
     
     // Haptic feedback untuk error
-    tg.HapticFeedback.notificationOccurred('error');
+    try {
+        tg.HapticFeedback.notificationOccurred('error');
+    } catch (e) {}
 
     setTimeout(() => {
         document.getElementById('errorModal').style.display = 'none';
@@ -341,7 +443,9 @@ function showSuccess(message) {
     document.getElementById('successModal').style.display = 'flex';
     
     // Haptic feedback untuk success
-    tg.HapticFeedback.notificationOccurred('success');
+    try {
+        tg.HapticFeedback.notificationOccurred('success');
+    } catch (e) {}
 
     setTimeout(() => {
         document.getElementById('successModal').style.display = 'none';
