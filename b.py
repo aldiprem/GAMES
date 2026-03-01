@@ -258,11 +258,32 @@ async def setup_deposit_handlers(client):
                     import traceback
                     traceback.print_exc()
 
+    # Tambahkan handler untuk /start dengan parameter di b.py
     @client.on(events.NewMessage(pattern='/start'))
     async def start_handler(event):
-        if event.message.text != '/start':
-            return
+        """Handle /start command with payload parameter"""
         
+        # Parse parameter jika ada
+        if event.message.text.startswith('/start '):
+            payload = event.message.text[7:].strip()  # Ambil setelah /start 
+            
+            if payload.startswith('deposit:'):
+                # Ini adalah request deposit
+                parts = payload.split(':')
+                if len(parts) == 5:
+                    user_id = int(parts[1])
+                    amount = int(parts[2])
+                    
+                    # Validasi apakah user yang chat sama dengan yang di payload
+                    if event.sender_id != user_id:
+                        await event.respond("❌ User ID tidak sesuai dengan transaksi")
+                        return
+                    
+                    # Kirim invoice untuk pembayaran Stars
+                    await send_stars_invoice(event, amount, payload)
+                    return
+        
+        # Default response
         await event.respond(
             "🤖 **Bot Gacha Username**\n\n"
             "Bot ini digunakan untuk memproses pembayaran deposit dari website.\n\n"
@@ -270,6 +291,43 @@ async def setup_deposit_handlers(client):
             f"💰 **Deposit:** Minimal 1 Stars\n\n"
             "Silakan lakukan deposit melalui website untuk mendapatkan saldo."
         )
+    
+    async def send_stars_invoice(event, amount, payload):
+        """Kirim invoice Stars ke user"""
+        try:
+            invoice = types.Invoice(
+                currency="XTR",  # Telegram Stars
+                prices=[types.LabeledPrice(
+                    label="Deposit Stars",
+                    amount=amount
+                )]
+            )
+            
+            media = types.InputMediaInvoice(
+                title="💰 Deposit Stars",
+                description=f"Deposit {amount} ⭐ ke saldo Gacha Username",
+                photo=None,
+                invoice=invoice,
+                payload=payload.encode(),
+                provider=None,
+                provider_data=types.DataJSON(data='{}'),
+                start_param="deposit"
+            )
+            
+            await event.client(functions.messages.SendMediaRequest(
+                peer=await event.client.get_input_entity(event.chat_id),
+                media=media,
+                message=f"🧾 **INVOICE DEPOSIT**\n\n"
+                        f"Jumlah: **{amount} ⭐**\n\n"
+                        f"Klik tombol PAY di bawah untuk membayar.",
+                random_id=random.randint(1, 2**63)
+            ))
+            
+            logger.info(f"Invoice sent to user {event.sender_id} for {amount} stars")
+            
+        except Exception as e:
+            logger.error(f"Error sending invoice: {e}")
+            await event.respond("❌ Gagal mengirim invoice. Silakan coba lagi.")
 
     @client.on(events.NewMessage(pattern='/balance'))
     async def balance_handler(event):
