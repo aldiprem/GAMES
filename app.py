@@ -4,6 +4,7 @@ import config
 from services.users import users_bp
 from services.stok import stok_bp
 from services.bot import bot_bp
+from services.gacha import gacha_bp
 import os
 
 # Initialize Flask app
@@ -15,6 +16,7 @@ CORS(app)
 app.register_blueprint(users_bp)
 app.register_blueprint(stok_bp)
 app.register_blueprint(bot_bp)
+app.register_blueprint(gacha_bp)
 
 # Middleware untuk cek auth (sederhana)
 @app.before_request
@@ -35,6 +37,10 @@ def check_auth():
 def index():
     return render_template('panel.html')
 
+@app.route('/gacha')
+def gacha_page():
+    return render_template('gacha.html')
+
 # Route untuk cek status
 @app.route('/health')
 def health():
@@ -42,4 +48,4 @@ def health():
 
 if __name__ == '__main__':
     print(f"🚀 Panel running on http://{config.HOST}:{config.PORT}")
-    app.run(host=config.HOST, port=config.PORT, debug=True)
+    app.run(host=config.HOST, port=config.PORT, debug=config.DEBUG)
