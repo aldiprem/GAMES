@@ -258,16 +258,16 @@ async def run_bot(config):
                 logger.error(f"Error handling deposit payload: {e}")
                 await event.respond("❌ Terjadi kesalahan.")
 
-        # ============ FUNGSI SEND INVOICE YANG DIPERBAIKI ============
+        # ============ FUNGSI SEND INVOICE (PERSIS SEPERTI PAY.PY) ============
         async def send_stars_invoice(event, amount, payload):
-            """Kirim invoice Stars ke user (seperti di pay.py)"""
+            """Kirim invoice Stars ke user (persis seperti di pay.py)"""
             try:
                 logger.info(f"Sending invoice for {amount} stars with payload: {payload}")
                 
                 # Pastikan amount adalah integer
                 amount = int(amount)
                 
-                # Buat invoice dengan parameter yang benar
+                # Buat invoice dengan parameter yang benar (persis seperti pay.py)
                 invoice = types.Invoice(
                     currency="XTR",
                     prices=[
@@ -278,15 +278,16 @@ async def run_bot(config):
                     ]
                 )
                 
-                # Buat media invoice dengan semua parameter yang diperlukan
+                # Buat media invoice PERSIS seperti di pay.py
+                # Di pay.py: provider=None, provider_data=types.DataJSON(data='{}')
                 media = types.InputMediaInvoice(
                     title="💰 Deposit Stars",
                     description=f"Deposit {amount} ⭐ ke saldo Gacha Username",
-                    photo=None,  # Bisa None
+                    photo=None,
                     invoice=invoice,
-                    payload=payload.encode('utf-8'),  # Pastikan encode ke bytes
-                    provider=None,  # Bisa None untuk Stars
-                    provider_data=types.DataJSON(data='{}'),  # DataJSON kosong
+                    payload=payload.encode('utf-8'),
+                    provider=None,  # None seperti di pay.py
+                    provider_data=types.DataJSON(data='{}'),  # Ini yang bener!
                     start_param="deposit"
                 )
                 
@@ -531,28 +532,20 @@ async def run_bot(config):
                 logger.error(f"Error in deposit_test_handler: {e}")
                 await event.respond(f"❌ Error: {str(e)}")
 
-        # ============ HANDLER UNTUK BALANCE (VERSI YANG BENAR) ============
+        # ============ HANDLER UNTUK BALANCE (MENGGUNAKAN METODE DARI PAY.PY) ============
         @client.on(events.NewMessage(pattern='/balance'))
         async def balance_handler(event):
-            """Cek saldo Stars bot"""
+            """Cek saldo Stars bot (menggunakan metode dari pay.py)"""
             if event.sender_id not in OWNER_ID:
                 await event.respond("❌ Perintah ini hanya untuk owner")
                 return
             
             try:
-                # Method yang benar untuk cek saldo Stars
-                result = await client(functions.payments.GetStarsStatusRequest(
-                    peer=await client.get_input_entity('me')
-                ))
-                
+                # Metode dari pay.py - GetStarsBalanceRequest
+                result = await client(functions.payments.GetStarsBalanceRequest())
                 balance = result.balance
                 
-                # Format response
-                await event.respond(
-                    f"💰 **SALDO BOT STARS**\n\n"
-                    f"**{balance}** ⭐\n\n"
-                    f"📌 Update: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}"
-                )
+                await event.respond(f"💰 **SALDO BOT STARS:** {balance} ⭐")
                 
             except Exception as e:
                 logger.error(f"Error in balance_handler: {e}")
