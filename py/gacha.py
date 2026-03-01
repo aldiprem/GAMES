@@ -1,12 +1,13 @@
 import os
 from datetime import datetime
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey, BigInteger
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from dotenv import load_dotenv
 import pytz
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+from urllib.parse import parse_qs
 import hmac
 import hashlib
 
@@ -69,14 +70,17 @@ def verify_telegram_auth(auth_data):
     # Cek hash
     check_hash = data.pop('hash', None)
     if not check_hash:
+        print("No hash in auth data")
         return None
     
-    # Buat string untuk verifikasi
+    # Buat string untuk verifikasi dengan urutan KEY ALFABETIS
     data_check_arr = []
-    for key in sorted(data.keys()):
+    for key in sorted(data.keys()):  # PENTING: Harus sorted!
         value = data[key]
         data_check_arr.append(f"{key}={value}")
     data_check_string = "\n".join(data_check_arr)
+    
+    print(f"Data string for verification (sorted): {data_check_string}")
     
     # Buat secret key dari bot token
     secret_key = hashlib.sha256(BOT_TOKEN.encode()).digest()
@@ -88,11 +92,13 @@ def verify_telegram_auth(auth_data):
         hashlib.sha256
     ).hexdigest()
     
+    print(f"Expected hash: {check_hash}")
+    print(f"Calculated hash: {calculated_hash}")
+    
     if calculated_hash != check_hash:
-        print(f"Hash mismatch! Expected: {check_hash}, Got: {calculated_hash}")
-        print(f"Data string: {data_check_string}")
         return None
     
+    print(f"✅ Auth success for user {data.get('id')}")
     return data
 
 # Tambahkan route ini setelah CORS setup
@@ -114,30 +120,34 @@ def auth():
     """Endpoint untuk verifikasi login Telegram"""
     if request.method == 'OPTIONS':
         return '', 200
-        
-    data = request.json
-    print(f"Received auth data: {data}")  # DEBUG
     
-    # Cek apakah ada hash
-    if 'hash' not in data:
-        print("No hash in request data!")
-        return jsonify({'error': 'No hash provided'}), 401
+    # Ambil data dari form-urlencoded
+    data_string = request.get_data(as_text=True)
+    print(f"Raw data string: {data_string}")
     
-    auth_data = verify_telegram_auth(data.copy())
+    # Parse query string
+    parsed_data = parse_qs(data_string)
+    # Ambil nilai pertama dari setiap key (karena parse_qs mengembalikan list)
+    auth_data = {k: v[0] for k, v in parsed_data.items()}
     
-    if not auth_data:
+    print(f"Parsed auth data: {auth_data}")
+    
+    # Verifikasi dengan fungsi yang sudah ada
+    verified_data = verify_telegram_auth(auth_data)
+    
+    if not verified_data:
         return jsonify({'error': 'Invalid auth data'}), 401
     
     # Simpan atau update user di database
     db = SessionLocal()
-    user = db.query(User).filter(User.telegram_id == int(auth_data['id'])).first()
+    user = db.query(User).filter(User.telegram_id == int(verified_data['id'])).first()
     
     if not user:
         user = User(
-            telegram_id=int(auth_data['id']),
-            username=auth_data.get('username'),
-            first_name=auth_data.get('first_name'),
-            last_name=auth_data.get('last_name')
+            telegram_id=int(verified_data['id']),
+            username=verified_data.get('username'),
+            first_name=verified_data.get('first_name'),
+            last_name=verified_data.get('last_name')
         )
         db.add(user)
         db.commit()
